@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenPuck Config</title>
+<style>
+  :root{ --bg:#11131a; --card:#1b1f2b; --fg:#e7ecf3; --mut:#8a93a6; --acc:#5bd6a0; --acc2:#5b9bd6; --bad:#d65b6e; }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg);padding:24px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--mut);margin:0 0 20px}
+  .wrap{max-width:680px;margin:0 auto}
+  .card{background:var(--card);border:1px solid #272d3d;border-radius:12px;padding:18px 20px;margin-bottom:16px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px}
+  .row{display:flex;align-items:center;gap:14px;margin:12px 0}
+  .row label{flex:0 0 150px;color:var(--fg)}
+  .row .val{flex:0 0 64px;text-align:right;color:var(--acc);font-variant-numeric:tabular-nums}
+  input[type=range]{flex:1;accent-color:var(--acc)}
+  select{background:#0e1017;color:var(--fg);border:1px solid #313a4f;border-radius:8px;padding:6px 8px;flex:1}
+  button{background:#222a3a;color:var(--fg);border:1px solid #36405a;border-radius:8px;padding:9px 14px;cursor:pointer;font:inherit}
+  button:hover{border-color:var(--acc2)}
+  button.primary{background:var(--acc2);border-color:var(--acc2);color:#06121f;font-weight:600}
+  button.active{background:var(--acc);border-color:var(--acc);color:#062018;font-weight:600}
+  button:disabled{opacity:.4;cursor:default}
+  .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
+  .pill.up{background:#143626;color:var(--acc)} .pill.dn{background:#3a1822;color:var(--bad)}
+  .statgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .stat{background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px}
+  .stat .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .stat .v{font-size:18px;margin-top:2px}
+  .modes{display:flex;gap:10px}
+  .note{color:var(--mut);font-size:12px;margin-top:10px}
+  #log{font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap;margin-top:8px;max-height:120px;overflow:auto}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>OpenPuck Config</h1>
+  <p class="sub">nRF52840 Steam Controller 2 puck reimplementation — WebUSB. Chrome/Edge only.</p>
+
+  <div class="card" id="connectCard">
+    <div class="row" style="margin:0">
+      <button id="connectBtn" class="primary">Connect to OpenPuck</button>
+      <span id="connState" class="pill dn">disconnected</span>
+    </div>
+    <p class="note">If nothing appears in the device picker, OpenPuck may be busy, already claimed by another app, or needs a replug. This page also works when published through GitHub Pages because WebUSB only requires a secure context.</p>
+  </div>
+
+  <div id="panel" class="hide">
+    <div class="card">
+      <h2>USB mode</h2>
+      <div class="modes">
+        <button data-mode="0" class="modebtn">Steam (puck)</button>
+        <button data-mode="1" class="modebtn">Xbox 360</button>
+        <button data-mode="2" class="modebtn">Switch Pro</button>
+        <button data-mode="3" class="modebtn">Lizard (kbd+mouse)</button>
+      </div>
+      <p class="note">Switching reboots OpenPuck and re-enumerates USB (~2 s). The RF link reconnects automatically.</p>
+      <div class="row"><label>Persist last mode</label>
+        <button id="persistMode">off</button>
+        <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Link status</h2>
+      <div class="statgrid">
+        <div class="stat"><div class="k">RF link</div><div class="v" id="stLink">—</div></div>
+        <div class="stat"><div class="k">Slot</div><div class="v" id="stSlot">—</div></div>
+        <div class="stat"><div class="k">Delivered</div><div class="v" id="stRate">—</div></div>
+        <div class="stat"><div class="k">New reports</div><div class="v" id="stNew">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>RF poll rate</h2>
+      <div class="row"><label>Poll interval</label><input type="range" id="pollUs" min="1" max="120" step="1"><span class="val" id="pollUsV"></span></div>
+      <p class="note">Microseconds between RF polls (×100). Lower = poll harder = more fresh reports/s (peaks ~60/s near 700&nbsp;µs). Too aggressive can collapse the reply rate during heavy trackpad use — watch the “New reports” stat and trackpad feel as you tune.</p>
+    </div>
+
+    <div class="card">
+      <h2>Steam-mode report dedupe</h2>
+      <div class="row"><label>Forward only new</label>
+        <button id="fwdNew">on</button>
+        <span class="note" style="flex:1">Only send report 0x45 to Steam when the data actually changed (like the real puck).</span>
+      </div>
+      <p class="note">We were sending ~400 stale-repeat reports/s on top of ~100 real ones — Steam's trackpad smoothing stair-steps on the duplicates. ON = dedupe (puck-like). Toggle OFF to compare the old jittery behavior.</p>
+    </div>
+
+    <div class="card">
+      <h2>QoS adaptive channel hopping</h2>
+      <div class="row"><label>Auto-hop</label>
+        <button id="qos">off</button>
+        <span class="note" style="flex:1">When the RF link degrades (crcfail/no-reply spikes during trackpad), hop to a clean channel — like the real puck.</span>
+      </div>
+      <p class="note">Candidates {18,46,76,22,68}. Conservative (hops at most every ~2s) to avoid blip-storms; each hop has a brief ~0.5–1s re-sync blip. A/B it during heavy trackpad — watch crcfail and the feel.</p>
+    </div>
+
+
+    <div class="card" id="mouseCard">
+      <h2>Xbox-mode trackpad mouse</h2>
+      <div class="row"><label>Sensitivity</label><input type="range" id="mDiv" min="4" max="200" step="1"><span class="val" id="mDivV"></span></div>
+      <div class="row"><label>Glide / friction</label><input type="range" id="mFric" min="0" max="99" step="1"><span class="val" id="mFricV"></span></div>
+      <p class="note">Sensitivity is a divisor — lower = faster pointer. Glide = how long the cursor coasts after a flick.</p>
+    </div>
+
+    <div class="card" id="steamCard">
+      <h2>Steam-mode trackpad smoothing</h2>
+      <div class="row"><label>Smoothing</label><input type="range" id="padSmooth" min="5" max="100" step="1"><span class="val" id="padSmoothV"></span></div>
+      <p class="note">Interpolation alpha. 100 = off (raw 46 Hz capsense), lower = smoother but slightly laggier.</p>
+    </div>
+
+    <div class="card">
+      <h2>Button mapping</h2>
+      <div class="row"><label>A/B + X/Y swap</label>
+        <button id="abSwap">off</button>
+        <span class="note" style="flex:1">Nintendo layout (affects Xbox &amp; Switch modes)</span>
+      </div>
+      <div class="row"><label>L4 (back upper-left)</label><select class="back" data-i="0"></select></div>
+      <div class="row"><label>R4 (back upper-right)</label><select class="back" data-i="1"></select></div>
+      <div class="row"><label>L5 (back lower-left)</label><select class="back" data-i="2"></select></div>
+      <div class="row"><label>R5 (back lower-right)</label><select class="back" data-i="3"></select></div>
+      <p class="note">Back-paddle → button, applied in Xbox mode.</p>
+    </div>
+
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch Pro","Lizard (kbd+mouse)"];
+const BTN_CODES = [[0,"— none —"],[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"LB"],[6,"RB"],[7,"L3"],[8,"R3"],[9,"Back"],[10,"Start"],[11,"Guide"]];
+let dev=null, epIn=0, epOut=0, ifNum=0, polling=false;
+const $ = s=>document.querySelector(s);
+function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
+
+// populate back-paddle dropdowns
+for(const sel of document.querySelectorAll("select.back")){
+  for(const [c,n] of BTN_CODES){ const o=document.createElement("option"); o.value=c; o.textContent=n; sel.appendChild(o); }
+}
+
+async function connect(){
+  try{
+    dev = await navigator.usb.requestDevice({filters:[{vendorId:0x28DE},{vendorId:0x045E},{vendorId:0x057E}]});
+    await dev.open();
+    if(dev.configuration===null) await dev.selectConfiguration(1);
+    // find the WebUSB vendor interface: class 0xFF with one bulk-IN + one bulk-OUT (XInput is 0xFF but interrupt; CDC data is 0x0A)
+    let found=null;
+    for(const itf of dev.configuration.interfaces){
+      const a=itf.alternate;
+      if(a.interfaceClass!==0xFF) continue;
+      let bin=0,bout=0;
+      for(const e of a.endpoints){ if(e.type==="bulk"){ if(e.direction==="in")bin=e.endpointNumber; else bout=e.endpointNumber; } }
+      if(bin&&bout){ found={ifNum:itf.interfaceNumber, epIn:bin, epOut:bout}; break; }
+    }
+    if(!found){ log("no WebUSB interface found on this device"); return; }
+    ifNum=found.ifNum; epIn=found.epIn; epOut=found.epOut;
+    await dev.claimInterface(ifNum);
+    // WebUSB "connect" handshake: Adafruit_USBD_WebUSB only enables write() / connected()
+    // after the host sends SET_CONTROL_LINE_STATE (bRequest 0x22, value=1) on this interface.
+    await dev.controlTransferOut({requestType:"class", recipient:"interface", request:0x22, value:0x01, index:ifNum});
+    $("#connState").textContent="connected"; $("#connState").className="pill up";
+    $("#connectBtn").textContent="Reconnect";
+    $("#panel").classList.remove("hide");
+    log(`connected — VID ${dev.vendorId.toString(16)} iface ${ifNum} epIn ${epIn} epOut ${epOut}`);
+    dev.onUSBConnectionEvent;
+    navigator.usb.addEventListener("disconnect", e=>{ if(e.device===dev){ onGone(); }});
+    startPolling();
+  }catch(e){ log("connect failed: "+e.message); }
+}
+function onGone(){
+  polling=false; dev=null;
+  $("#connState").textContent="disconnected"; $("#connState").className="pill dn";
+  $("#panel").classList.add("hide");
+  log("device disconnected (likely a mode-switch reboot — reconnect)");
+}
+async function send(bytes){
+  if(!dev) return;
+  try{ await dev.transferOut(epOut, new Uint8Array(bytes)); }
+  catch(e){ log("write err: "+e.message); }
+}
+async function readBlob(){
+  try{
+    const r = await dev.transferIn(epIn, 64);
+    if(r.status!=="ok"||r.data.byteLength<2) return null;
+    const d=new Uint8Array(r.data.buffer);
+    // find 0xA5 frame
+    let i=0; while(i<d.length && d[i]!==0xA5) i++;
+    if(i+2>d.length) return null;
+    const len=d[i+1]; const p=d.slice(i+2, i+2+len);
+    return p.length>=12 ? p : null;
+  }catch(e){ if(dev) log("read err: "+e.message); return null; }
+}
+function applyBlob(p){
+  // [ver][mode][mDiv][mFric][padSmooth][abSwap][b0..b3][slot][up][f1lo][f1hi][pollU100][newlo][newhi]
+  const mode=p[1], mDiv=p[2], mFric=p[3], padSmooth=p[4], abSwap=p[5];
+  const back=[p[6],p[7],p[8],p[9]], slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
+  const pollU100=p[14], newps=(p.length>16?(p[15]|(p[16]<<8)):0), fwdNew=(p.length>20?p[20]:1), qos=(p.length>21?p[21]:0), persistMode=(p.length>22?p[22]:0);
+  // mode buttons
+  for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
+  $("#mouseCard").style.opacity = mode===1?1:0.5;
+  $("#steamCard").style.opacity = mode===0?1:0.5;
+  // status
+  $("#stLink").innerHTML = up? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
+  $("#stSlot").textContent = slot===0xFF? "—" : slot;
+  $("#stRate").textContent = up? f1+" /s" : "—";
+  $("#stNew").textContent = up? newps+" /s" : "—";
+  // sliders (only if not being dragged)
+  setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("padSmooth",padSmooth);
+  if(pollU100) setSlider("pollUs",pollU100);
+  $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);
+  $("#fwdNew").textContent = fwdNew? "on":"off"; $("#fwdNew").classList.toggle("active",!!fwdNew);
+  $("#qos").textContent = qos? "on":"off"; $("#qos").classList.toggle("active",!!qos);
+  $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
+  for(const sel of document.querySelectorAll("select.back")){ if(document.activeElement!==sel) sel.value=back[+sel.dataset.i]; }
+}
+function fmtSlider(id,v){ return id==="pollUs" ? (v*100)+"µs" : (""+v); }
+function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
+
+let inflight=false;
+async function refresh(){
+  if(!dev||inflight) return; inflight=true;
+  await send([0x01]); const p=await readBlob(); if(p) applyBlob(p);
+  inflight=false;
+}
+async function setField(field,value){
+  await send([0x02, field, value&0xff]); const p=await readBlob(); if(p) applyBlob(p);
+}
+async function startPolling(){
+  polling=true; await refresh();
+  while(polling && dev){ await new Promise(r=>setTimeout(r,600)); await refresh(); }
+}
+
+// UI wiring
+$("#connectBtn").onclick=connect;
+$("#abSwap").onclick=()=>{ const on=$("#abSwap").classList.contains("active"); setField(4, on?0:1); };
+$("#fwdNew").onclick=()=>{ const on=$("#fwdNew").classList.contains("active"); setField(14, on?0:1); };
+$("#qos").onclick=()=>{ const on=$("#qos").classList.contains("active"); setField(15, on?0:1); };
+$("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
+for(const id of ["mDiv","mFric","padSmooth","pollUs"]){
+  const field={mDiv:1,mFric:2,padSmooth:3,pollUs:9}[id];
+  $("#"+id).addEventListener("input", ()=>{ $("#"+id+"V").textContent=fmtSlider(id,$("#"+id).value); });
+  $("#"+id).addEventListener("change", ()=>setField(field, +$("#"+id).value));
+}
+for(const sel of document.querySelectorAll("select.back")){
+  sel.addEventListener("change", ()=>setField(5 + +sel.dataset.i, +sel.value));
+}
+for(const b of document.querySelectorAll(".modebtn")){
+  b.onclick=()=>{ if(confirm("Switch to "+MODE_NAMES[+b.dataset.mode]+"? OpenPuck will reboot.")){ send([0x03, +b.dataset.mode]); log("mode switch requested — device will reboot"); } };
+}
+if(!("usb" in navigator)) $("#connectBtn").outerHTML='<b style="color:var(--bad)">WebUSB not supported — use Chrome or Edge.</b>';
+</script>
+</body>
+</html>
