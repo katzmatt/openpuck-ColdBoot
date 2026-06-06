@@ -30,7 +30,7 @@ You will need to flash OpenPuck.ino onto a compatible microcontroller. See [buil
 A webusb based configuration UI is available at <link>. It allows Switching the mode manually and changing the back button mapping for Xbox mode among other things. This will likely only work in Chrome and Edge and needs the pro micro to be connected via USB to the same computer for it to function.
 
 # Contributions
-I have tested this software fairly extensively but I have limited resources. I only have one controller so I actually don't know if multiple controllers even work correctly. Please submit issues with any issues you find. PRs also welcome of course.
+I have tested this software fairly extensively but I have limited resources. I only have one controller so I actually don't know if multiple controllers even work correctly (in fact I'm almost sure they will not). Please submit issues with any issues you find. PRs also welcome of course.
 
 # Acknowledgements
 - Valve for putting out the amazing controller
