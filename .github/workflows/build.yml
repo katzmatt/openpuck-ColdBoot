@@ -11,6 +11,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # arduino-cli requires the main .ino to match its folder name; the repo
+          # checks out lowercase by default, so place it in a folder named OpenPuck.
+          path: OpenPuck
 
       - name: Set up Arduino CLI
         uses: arduino/setup-arduino-cli@v2
@@ -23,6 +27,7 @@ jobs:
           arduino-cli core install adafruit:nrf52
 
       - name: Compile OpenPuck
+        working-directory: OpenPuck
         run: |
           arduino-cli compile \
             -b adafruit:nrf52:feather52840 \
