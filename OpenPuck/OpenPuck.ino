@@ -707,6 +707,10 @@ static void rfHopTo(uint8_t newCh){
 // report 0x45 layout: [0]=0x45 [1]=seq [2..5]=buttons u32; analog offsets are from buttons-low-byte (rep[2]).
 static int s16off(const uint8_t* r,int off){ int v=r[2+off]|(r[2+off+1]<<8); return (v&0x8000)?v-0x10000:v; }
 static int u16off(const uint8_t* r,int off){ return r[2+off]|(r[2+off+1]<<8); }
+// Controller trigger analog: the u16 in report 0x45 tops out near half-scale (~0x8000) at a full pull, so a
+// straight >>8 reads only ~0x80 (XInput sees a half-pressed trigger). Scale x2 (>>7) and saturate so a full
+// pull maps to the full 0xFF. Shared by Xbox (analog) and Switch (digital threshold).
+static inline uint8_t trigU8(int u16v){ int v=u16v>>7; return (uint8_t)(v>255?255:v); }
 static uint32_t btnsOf(const uint8_t* r){ return (uint32_t)r[2]|((uint32_t)r[3]<<8)|((uint32_t)r[4]<<16)|((uint32_t)r[5]<<24); }
 // Triton button masks
 #define TB_A 0x1u
@@ -769,7 +773,7 @@ static void rfXboxGamepad(const uint8_t* r){
   // back paddles -> configurable mapping (default L4->LB, R4->RB, L5->L3, R5->R3)
   if(b&TB_L4)btn|=codeToXB(g_back[0]); if(b&TB_R4)btn|=codeToXB(g_back[1]);
   if(b&TB_L5)btn|=codeToXB(g_back[2]); if(b&TB_R5)btn|=codeToXB(g_back[3]);
-  uint8_t lt=u16off(r,4)>>8, rt=u16off(r,6)>>8;     // triggers u16 -> u8
+  uint8_t lt=trigU8(u16off(r,4)), rt=trigU8(u16off(r,6));   // triggers u16 (half-scale) -> full-range u8
   xinputSend(btn, lt, rt, (int16_t)s16off(r,8), (int16_t)s16off(r,10),   // L stick X/Y
                           (int16_t)s16off(r,12), (int16_t)s16off(r,14)); // R stick X/Y
 }
@@ -870,6 +874,10 @@ static const uint8_t SWITCH_HID_DESC[]={
   0xC0
 };
 static uint32_t g_swBtns=0; static int16_t g_swLX=0,g_swLY=0,g_swRX=0,g_swRY=0;  // latest decoded RF frame
+static uint8_t  g_swLT=0,g_swRT=0;  // latest scaled (0..255) L/R trigger pull, for the Switch digital-trigger threshold
+// Switch ZL/ZR are digital (on/off): fire once the analog pull crosses this fraction of full travel, so the
+// trigger activates far sooner than the controller's full-press click bit (~16% of 0xFF).
+#define SW_TRIG_ON 40
 static unsigned long g_swLastMs=0;
 Adafruit_USBD_HID g_switch;   // HORIPAD gamepad HID interface (mode 2)
 // HORIPAD/Switch button bits: Y=1 B=2 A=4 X=8 L=10 R=20 ZL=40 ZR=80 Minus=100 Plus=200 LClick=400 RClick=800 Home=1000 Capture=2000
@@ -885,11 +893,14 @@ static uint16_t codeToSwitch(uint8_t c, uint16_t fA,uint16_t fB,uint16_t fX,uint
 }
 static void switchBuildHoripad(uint8_t out[8]){
   uint32_t b=g_swBtns; uint16_t btn=0;
+  // Mode-switch chord (all 4 back + A/X/Y): don't pass the face press to the console while the back-4 are held.
+  if((b&(TB_R4|TB_L4|TB_R5|TB_L5))==(TB_R4|TB_L4|TB_R5|TB_L5)) b &= ~(uint32_t)(TB_A|TB_X|TB_Y);
   // face buttons with optional A/B + X/Y swap (Nintendo physical-vs-label layout)
   uint16_t fY = g_abSwap?0x08:0x01, fB = g_abSwap?0x04:0x02, fA = g_abSwap?0x02:0x04, fX = g_abSwap?0x01:0x08;
   if(b&TB_Y)btn|=fY; if(b&TB_B)btn|=fB; if(b&TB_A)btn|=fA; if(b&TB_X)btn|=fX;
   if(b&TB_LB)btn|=0x10; if(b&TB_RB)btn|=0x20;                 // L, R
-  if(b&0x8000000u)btn|=0x40; if(b&0x800000u)btn|=0x80;        // ZL(LTrigClick), ZR(RTrigClick)
+  // ZL/ZR digital: trip on the analog threshold (activates early) OR the full-press click bit
+  if((g_swLT>=SW_TRIG_ON)||(b&0x8000000u))btn|=0x40; if((g_swRT>=SW_TRIG_ON)||(b&0x800000u))btn|=0x80;
   if(b&TB_VIEW)btn|=0x100; if(b&TB_MENU)btn|=0x200;           // Minus, Plus
   if(b&TB_L3)btn|=0x400; if(b&TB_R3)btn|=0x800;               // LClick, RClick
   if(b&TB_STEAM)btn|=0x1000;                                  // Home
@@ -972,6 +983,13 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
             // cache the latest decoded frame for the Switch streamer + Xbox/Steam paths
             g_swBtns=bb; g_swLX=(int16_t)s16off(rep,8); g_swLY=(int16_t)s16off(rep,10);
             g_swRX=(int16_t)s16off(rep,12); g_swRY=(int16_t)s16off(rep,14);
+            g_swLT=trigU8(u16off(rep,4)); g_swRT=trigU8(u16off(rep,6));   // for the Switch digital-trigger threshold
+            // Mode-switch chord (all 4 back + A/X/Y): don't leak the face press to the host. While the back-4
+            // are held, strip A/X/Y from the report Steam/Xbox forward (g_swBtns stays intact below so the chord
+            // detector still fires; the Switch path masks the same bits in switchBuildHoripad).
+            const uint32_t CHORD_BACK4 = TB_R4|TB_L4|TB_R5|TB_L5;
+            if((bb&CHORD_BACK4)==CHORD_BACK4)
+              ((uint8_t*)rep)[2] &= ~(uint8_t)(TB_A|TB_X|TB_Y);   // A=0x01 X=0x04 Y=0x08 -> all in the low buttons byte
             if(g_usbMode==2){                           // SWITCH: streamed from loop() (swStream); nothing to send here
             } else if(g_xbox){                          // XBOX: standard gamepad + right-pad mouse (2nd interface)
               rfXboxGamepad(rep); rfXboxMouse(rep);
