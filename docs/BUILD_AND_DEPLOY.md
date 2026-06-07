@@ -30,7 +30,7 @@ Use your package manager if it ships a recent `arduino-cli`, or download the rel
 
 ### Windows
 
-Install the official Arduino CLI zip or MSI, then ensure `arduino-cli.exe` is on `PATH`.
+Use [choco](https://chocolatey.org/) and do a `choco install arduino-cli`. If you don't have that then install the official [Arduino CLI zip or MSI](https://arduino.github.io/arduino-cli/1.5/installation/), then ensure `arduino-cli.exe` is on `PATH`.
 
 ## 3. Install the board core
 
@@ -39,28 +39,15 @@ Run once on any platform:
 ```bash
 arduino-cli config init
 arduino-cli core update-index
-arduino-cli core install adafruit:nrf52
+arduino-cli core install adafruit:nrf52 --additional-urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
 ```
-
-If your CLI config does not already include the Adafruit package index, add it first:
-
-```yaml
-board_manager:
-  additional_urls:
-    - https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
-```
-
-Then rerun `arduino-cli core update-index`.
 
 ## 4. Build the firmware
 
 From the repository root:
 
 ```bash
-arduino-cli compile \
-  -b adafruit:nrf52:feather52840 \
-  --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" \
-  OpenPuck
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" OpenPuck
 ```
 
 This sketch requires `CFG_TUD_HID=4` because Steam mode exposes four HID interfaces.
