@@ -137,11 +137,16 @@ path forwards the puck's raw `0x45` body untouched so Steam does its own trackpa
 Full details are in `docs/PROTOCOL.md`; the register-level constants and their provenance are commented in
 `radio.cpp` and `rf_link.cpp`. The essentials:
 
-- **PHY/framing** (decoded from real-puck capture): `Ble_2Mbit`, big-endian, whitening off, 5-byte address
-  `"ibex"`, CRC16 `0x11021`/`0xFFFF` (address included). On-air address is the bit-reversed stored bytes.
-- **Bonding/reconnect**: we transmit a *host frame* on the rendezvous address (channel 2) carrying the bonded
-  controller's UUIDs plus the session base/prefix/channel we want it to use. The controller filters by UUID
-  and connects on the clean session channel (default 18).
+- **PHY/framing** (decoded from real-puck capture): `Ble_2Mbit`, big-endian, whitening off, 5-byte address,
+  CRC16 `0x11021`/`0xFFFF` (address included). On-air address is the bit-reversed stored bytes.
+- **Two addresses — discovery vs session**: the *discovery/rendezvous* address is the shared, controller-known
+  `"ibex"` on channel 2; every puck uses it so any controller can find any puck. The *session* address is
+  **unique per device** (`g_sessBase`/`g_sessPrefix`, derived from the FICR DEVICEID in `rfGenSessionAddr()`).
+  This mirrors the real puck and is what keeps two OpenPucks from colliding on-air (see "Multi-puck isolation").
+- **Bonding/reconnect**: we transmit a *host frame* — on the shared `"ibex"` rendezvous (ch2) for a searching
+  controller, and on our unique session address as a keepalive once connected. Both carry the bonded
+  controller's UUIDs plus the **session** base/prefix/channel we want it to adopt. The controller filters by
+  UUID, adopts the advertised session address, and the connected poll then runs there (default channel 18).
 - **Connected poll**: we are the PTX/master. We announce host-awake (`E7 00 00`), then each poll cycle send
   `E3` + a GET-report-`0x45` sub-TLV; the controller replies with a `0xF1` input report containing TLVs
   (type 6 = the HID report `0x45`). Cycling the ESB PID on the poll is what drains the controller's report
@@ -183,6 +188,20 @@ interface set. By default every cold boot returns to Steam mode unless "persist 
   history. It is an `else-if` chain, so the **first** matching letter wins — a couple of letters (`C`, `H`)
   appear twice and the second occurrence is currently unreachable (preserved verbatim from the original; worth
   cleaning up if those commands are ever needed).
+
+## Multi-puck isolation
+
+Because the discovery address is shared, two things prevent one puck from disturbing another:
+
+1. **Unique session address.** After bonding, each puck moves the controller onto its own per-device session
+   base/prefix (advertised in the host frame). The connected poll and its RX windows run there, so a puck only
+   ever hears its own controller — not a neighbor's session traffic.
+2. **Reply-type gate.** The link-alive timestamp (`g_connReplyMs`, which drives the "controller reconnected →
+   wake the host" remote-wakeup) is stamped only on genuine controller replies (F-type: `0xF1`/`0xF2`/`0xF3`),
+   never on a puck→controller frame (E-type: `0xE1` host frame, `0xE2/E3/E7`). This is belt-and-suspenders: it
+   means even a neighbor's `0xE1` discovery beacon picked up on the shared rendezvous can't be mistaken for a
+   reconnect. (Before these two fixes, plugging a second puck into another computer would wake a sleeping host
+   running the first puck.)
 
 ## RF reverse-engineering tooling
 

@@ -50,7 +50,11 @@ static unsigned long g_lastStream = 0;
 // HOST FRAME the bonded controller waits for (IBEX FUN_00019000 verify: b[0]=0x12, b[5]=0xE1, b[6..10]=
 // proteus_uuid, b[10..14]=ibex_uuid). Built like PROTEUS FUN_00027e9a. Sent on the shared rendezvous addr;
 // the controller filters by the uuids in the payload, then connects.
-static void rfHostFrameOnce(int slot){
+// Transmit one host frame. `discovery`=true sends it on the SHARED rendezvous address ("ibex"/ch2) where a
+// searching controller looks; =false sends it on this puck's unique SESSION address (the keepalive once the
+// controller has adopted the session). EITHER way the payload advertises the session base/prefix/channel, so
+// the controller always learns the unique address to connect on.
+static void rfHostFrameOnce(int slot, bool discovery){
   if (slot<0||slot>=NSLOT||!g_slot[slot].used) return;
   uint8_t *rec = g_slot[slot].rec;                       // [proteus_uuid 4][ibex_uuid 4][serial 16]
   // CRC-VALIDATED frame (decoded from real puck): ESB-DPL RAM = [LENGTH][S1=PID][payload(18)]. payload:
@@ -64,9 +68,13 @@ static void rfHostFrameOnce(int slot){
   memcpy(rftx+7, rec+4, 4);            // payload[5..9] ibex_uuid
   rftx[11]=g_sessCh;                   // payload[9] session channel: tell the controller to run the session on
                                        // the clean channel (it adopts buf[0xe]); discovery beacon still TXes on ch2
-  memcpy(rftx+15, g_rfBase, 4);        // payload[13..17] session base
-  rftx[19]=g_rfPrefix;                 // payload[17] session prefix
-  rfConfig(g_rfCh); rfSetAddr(g_rfBase,g_rfPrefix);
+  memcpy(rftx+15, g_sessBase, 4);      // payload[13..17] session base  (the per-device UNIQUE address)
+  rftx[19]=g_sessPrefix;               // payload[17] session prefix
+  // TX address: discovery uses the shared "ibex" rendezvous; the session keepalive uses our unique address
+  // (where the controller now listens). The advertised session params (above) are identical either way.
+  const uint8_t* txBase = discovery ? g_rfBase   : g_sessBase;
+  uint8_t        txPfx  = discovery ? g_rfPrefix : g_sessPrefix;
+  rfConfig(g_rfCh); rfSetAddr(txBase, txPfx);
   NRF_RADIO->PACKETPTR=(uint32_t)rftx;
   NRF_RADIO->SHORTS=RADIO_SHORTS_READY_START_Msk|RADIO_SHORTS_END_DISABLE_Msk;
   NRF_RADIO->EVENTS_DISABLED=0; NRF_RADIO->TASKS_TXEN=1;
@@ -87,8 +95,8 @@ static void rfHostFrameOnce(int slot){
 void rfHopTo(uint8_t newCh){
   if(g_connSlot<0 || newCh==g_sessCh) return;
   uint8_t cur=g_sessCh, savedRfCh=g_rfCh;
-  g_sessCh=newCh; g_rfCh=cur;                // host frame now advertises newCh but is TXed on cur
-  for(int k=0;k<6;k++){ rfHostFrameOnce(g_connSlot); delayMicroseconds(700); }
+  g_sessCh=newCh; g_rfCh=cur;                // host frame now advertises newCh but is TXed on cur (session addr)
+  for(int k=0;k<6;k++){ rfHostFrameOnce(g_connSlot, false); delayMicroseconds(700); }
   g_rfCh=savedRfCh;                          // poll + session beacon now run on g_sessCh=newCh
 }
 
@@ -97,7 +105,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen){
   rftx[0]=plen;                          // LENGTH = payload byte count
   rftx[1]=s1;                            // S1 (type-specific)
   memcpy(rftx+2, payload, plen);         // payload[0]=type byte, then data/TLVs
-  rfConfig(ch); rfSetAddr(g_rfBase,g_rfPrefix);
+  rfConfig(ch); rfSetAddr(g_sessBase,g_sessPrefix);   // connected poll runs on this puck's UNIQUE session addr
   NRF_RADIO->PACKETPTR=(uint32_t)rftx;
   NRF_RADIO->SHORTS=RADIO_SHORTS_READY_START_Msk|RADIO_SHORTS_END_DISABLE_Msk;
   NRF_RADIO->EVENTS_DISABLED=0; NRF_RADIO->TASKS_TXEN=1;
@@ -112,9 +120,14 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen){
     bool crcok=NRF_RADIO->CRCSTATUS&1; rxlen=rfrx[0];
     if(!crcok){ g_stCrc++; g_qosBad++; }                // reply arrived but CRC failed -> RF quality (channel/interference)
     if (crcok && rxlen && rxlen<=64){                   // F1 report ~46B, so allow up to MAXLEN
-      g_connRx++; g_connReplyMs=millis();               // link alive -> loop() suppresses the redundant E1 beacon
-      if(rfrx[2]==0xF1) g_stF1++;
       uint8_t rtype=rfrx[2];                            // reply type byte (proven offset from captures)
+      // Only OUR controller's replies (F-type: 0xF1 input / 0xF2 disconnect / 0xF3 status) mark the link
+      // alive. Every OpenPuck shares the same RF address "ibex" + CRC config, and a puck transmits host-frame
+      // beacons (0xE1) + polls (0xE2/E3/E7) -- all E-type. Without this gate, puck A receives a SECOND puck's
+      // 0xE1 beacon (e.g. one just plugged into another computer), bumps g_connReplyMs, and the "new RF
+      // connection" wake in rfLinkTask() fires -> the second puck spuriously wakes this sleeping host.
+      if (rtype >= 0xF0){ g_connRx++; g_connReplyMs=millis(); }  // link alive -> loop() suppresses the redundant E1 beacon
+      if(rtype==0xF1) g_stF1++;
       if(rtype==0xF2) g_connCooldown=millis();          // controller disconnecting/powering off -> back off 2.5s
       if(rtype==0xF3){                                  // F3 = controller status/version reply (reply to E7 handshake, byte[6]=version)
         g_stF3++; g_connF3v=rfrx[6];
@@ -229,9 +242,9 @@ void rfLinkTask(){
     bool connNow = (g_connSlot>=0 && millis()-g_connReplyMs < 300);
     // session keepalive on the clean channel: every loop while connecting (fast), every 25ms once connected
     // (every-loop beaconing also hammers the session ch and steals reply slots from the poll)
-    if (millis()-g_lastSessBeacon >= (connNow ? 25u : 0u)) { g_lastSessBeacon=millis(); g_rfCh=g_sessCh; for (int s=0;s<NSLOT;s++) rfHostFrameOnce(s); }
+    if (millis()-g_lastSessBeacon >= (connNow ? 25u : 0u)) { g_lastSessBeacon=millis(); g_rfCh=g_sessCh; for (int s=0;s<NSLOT;s++) rfHostFrameOnce(s, false); }
     // discovery beacon on ch2 (where a searching controller looks): every loop when down, occasionally when up
-    if (millis()-g_lastDisc >= (connNow ? 200u : 0u)) { g_lastDisc=millis(); g_rfCh=2; for (int s=0;s<NSLOT;s++) rfHostFrameOnce(s); }
+    if (millis()-g_lastDisc >= (connNow ? 200u : 0u)) { g_lastDisc=millis(); g_rfCh=2; for (int s=0;s<NSLOT;s++) rfHostFrameOnce(s, true); }
   }
   if (g_connOn && millis()-g_connCooldown > 2500) { rfConnStep(); }            // connected-mode: poll controller, read input
   { static bool wasRfConn=false;                                               // remote wakeup on new RF controller connection

@@ -22,6 +22,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "config.h"
 #include "identity.h"
 #include "bonds.h"
+#include "radio.h"
 #include "controllers.h"
 #include "haptics.h"
 #include "rf_link.h"
@@ -37,6 +38,7 @@ static uint8_t g_usbCfgDesc[512];   // puck composite (4 HID + WebUSB) exceeds t
 
 void setup() {
   genSerial();
+  rfGenSessionAddr();   // per-device unique RF session address (advertised in the host frame; isolates pucks)
   InternalFS.begin();
   loadCfg(); g_xbox = !modeIsPuck(g_usbMode);   // load persisted config + decide USB presentation BEFORE registering interfaces
   g_active = controllerFor(g_usbMode);
@@ -76,6 +78,8 @@ void setup() {
   hapticInit();   // clear relay/active flags + arm the reconnect block & initial stop burst
   static const char* MODE_NAME[]={"STEAM(puck)","XBOX(xinput+mouse)","SWITCH(horipad)","LIZARD(puck kb/mouse)","SWITCH(pro+gyro)","PS5(dualsense)","HIDGYRO(ds4+motion)"};
   Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, MODE_NAME[g_usbMode<=MODE_MAX?g_usbMode:0]);
+  Serial.printf("# session addr %02X%02X%02X%02X/%02X ch%u (discovery on ibex/ch2)\n",
+                g_sessBase[0],g_sessBase[1],g_sessBase[2],g_sessBase[3],g_sessPrefix,g_sessCh);
   // Hardware watchdog: if loop() ever stops feeding it (a wedged radio busy-wait, a HardFault spin, a blocked
   // CDC write) the WDT resets the nRF52 after ~8s -- re-enumerating USB and re-initialising RF on its own, so a
   // hang no longer needs a physical replug. RUN keeps it counting in sleep; PAUSE freezes it under a debugger.

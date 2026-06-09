@@ -24,6 +24,14 @@ extern uint8_t  g_rfCh;              // current TX/RX channel (hopped during bea
 extern uint8_t  g_rfBase[4];         // "ibex"
 extern uint8_t  g_sessCh;            // connected-session channel: a CLEAN data channel off the congested adv ch2
 
+// Per-device SESSION address (base+prefix). Discovery/rendezvous stays on the SHARED "ibex" address (g_rfBase)
+// so any controller can find us; the host frame then advertises THIS unique address and the controller adopts
+// it for the connected session. Two OpenPucks therefore never share an on-air session address -> no crosstalk,
+// no spurious cross-wake. Derived from the FICR DEVICEID (stable per chip, unique across chips).
+extern uint8_t  g_sessBase[4];
+extern uint8_t  g_sessPrefix;
+void rfGenSessionAddr();
+
 extern uint8_t  rfrx[80], rftx[80];  // RADIO DMA buffers
 extern uint32_t g_rfRxCount;
 

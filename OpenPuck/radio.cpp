@@ -10,6 +10,23 @@ uint8_t  g_rfBase[4] = {0x69, 0x62, 0x65, 0x78};  // "ibex"
 // {18,2,80}; trackpad data bursts collide on bad channels -> reply-rate crash. Tunable 'C'.
 uint8_t  g_sessCh = 18;
 
+// pre-init to "ibex"/0x10 as a safe default; rfGenSessionAddr() overwrites with the per-device value at boot.
+uint8_t  g_sessBase[4] = {0x69, 0x62, 0x65, 0x78};
+uint8_t  g_sessPrefix = 0x10;
+
+void rfGenSessionAddr(){
+  // Mix the 64-bit FICR DEVICEID into a 4-byte base + a prefix. Deterministic per chip (stable across reboots,
+  // debuggable) and unique across chips (DEVICEID is unique) -> two OpenPucks never collide on the connected
+  // session. Avoid degenerate address bytes (0x00/0xFF) for clean preamble correlation, and never reproduce
+  // the shared discovery base "ibex" (else the isolation is lost).
+  uint32_t h  = NRF_FICR->DEVICEID[0] * 0x9E3779B1u ^ NRF_FICR->DEVICEID[1];
+  uint32_t h2 = NRF_FICR->DEVICEID[1] * 0x85EBCA6Bu ^ NRF_FICR->DEVICEID[0];
+  for(int i=0;i<4;i++){ uint8_t b=(uint8_t)(h>>(i*8)); if(b==0x00||b==0xFF) b^=0x5A; g_sessBase[i]=b; }
+  uint8_t p=(uint8_t)(h2>>16); if(p==0x00||p==0xFF) p=0x5C; g_sessPrefix=p;
+  if(g_sessBase[0]==g_rfBase[0] && g_sessBase[1]==g_rfBase[1] &&
+     g_sessBase[2]==g_rfBase[2] && g_sessBase[3]==g_rfBase[3]) g_sessBase[0]^=0x80;   // collided with "ibex"
+}
+
 uint8_t  rfrx[80], rftx[80];
 uint32_t g_rfRxCount = 0;
 
