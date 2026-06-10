@@ -33,6 +33,7 @@ void hapticDumpLog();   // 'H' console dump of the recent OUTPUT-report history
 bool hapticLinkUp();
 bool haptic82Blocked();
 bool hapticRelaySlotOk(int slot);
+bool haptic82PayloadOn(const uint8_t* p, uint16_t n);   // true = haptic ON (nonzero gain); false = a STOP/OFF frame
 void haptic82HostReport(const uint8_t* p, uint16_t n);
 
 // queue + flush the pending host/test/stop relay inside the poll cadence (called from rf_link)

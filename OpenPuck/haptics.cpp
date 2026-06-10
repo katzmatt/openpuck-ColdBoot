@@ -48,7 +48,7 @@ bool haptic82Blocked(){
 bool hapticRelaySlotOk(int slot){
   return g_connSlot>=0 && slot==g_connSlot;
 }
-static bool haptic82PayloadOn(const uint8_t* p, uint16_t n){
+bool haptic82PayloadOn(const uint8_t* p, uint16_t n){
   if(n<3) return false;
   for(uint16_t i=2;i<n;i++) if(p[i]) return true;   // observed form is [01 01 gain], but treat any trailing non-zero as active
   return false;

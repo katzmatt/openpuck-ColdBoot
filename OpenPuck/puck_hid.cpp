@@ -48,11 +48,10 @@ static Adafruit_USBD_HID hid[NSLOT];
 // and ANY OUTPUT report likewise stamps g_steamAliveMs. When the heartbeat stops we fall back to lizard, so the
 // controller drives desktop keyboard+mouse whenever Steam isn't running. MODE_LIZARD forces lizard always.
 static unsigned long g_steamAliveMs = 0;   // millis of last Steam OUTPUT/settings write; 0 at boot => lizard until Steam appears
-// Fall back to lizard this long after Steam's ~3s settings heartbeat stops. This CANNOT go below ~3s: the only
-// "Steam closed" signal is the absence of that beat, so a shorter window would flip to lizard in the gaps
-// while Steam is still running (lizard mid-game). 4s is just above the cadence -> near-minimal switch delay
-// while Steam quits. The heartbeat rides USB (reliable, unlike the RF link), so a dropped beat is a non-issue;
-// no need for the old 7s (>2x) padding.
+// Fall back to lizard this long after Steam's ~3s settings heartbeat stops. 4s is just above the cadence ->
+// near-minimal switch delay when Steam quits, without flipping to lizard in the gaps while Steam runs. This used
+// to need 7s padding because a jittered heartbeat tripping lizard mid-haptic would gate out the haptic STOP and
+// strand a buzz -- but the relay now ALWAYS lets a STOP through (see handleSet), so that risk is gone.
 #define LIZARD_WD_MS 4000u
 static bool g_autoLizard = true;            // master switch; false => Steam mode always forwards 0x45
 // Single source of truth, shared by the USB input path AND the haptic relay gate: if we ever relay a 0x82 to
@@ -82,7 +81,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
                                    // driving -> leave lizard for gamepad NOW, so a haptic that arrives before the
                                    // first 0x87 doesn't get relayed while we're still presenting lizard (-> buzz loop).
     }
-    if (rid >= 0x80 && rid <= 0x86 && n >= 1 && hapticRelaySlotOk(slot) && !lizardActive()) {  // wrap as a SET sub-TLV like the report-01 path
+    // A haptic STOP (0x82 with all-zero payload) is ALWAYS allowed through, even while presenting lizard -- it
+    // can only CLEAR a buzz, never start one. This decouples the lizard delay from stuck haptics: if a jittered
+    // heartbeat flips lizard mid-haptic, the OFF still reaches the controller instead of being gated out.
+    bool isHapStop = (rid == 0x82 && !haptic82PayloadOn(b, n));
+    if (rid >= 0x80 && rid <= 0x86 && n >= 1 && hapticRelaySlotOk(slot) && (!lizardActive() || isHapStop)) {  // wrap as a SET sub-TLV like the report-01 path
       if (!haptic82Blocked()) {
         uint8_t m = n > (uint16_t)(sizeof g_relayBuf - 2) ? (sizeof g_relayBuf - 2) : n;
         g_relayBuf[0] = rid; g_relayBuf[1] = m; memcpy(g_relayBuf + 2, b, m);
@@ -105,7 +108,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
   if (rid == 1 && n >= 2) {   // report 0x01 = raw passthrough -> queue for RF relay to the controller
     if (cmd >= 0x80 && cmd <= 0x89) hapLogAdd((uint8_t)slot, cmd, b, n);   // capture feature-passthrough haptics/LED too (rid shown = cmd; bytes start [cmd][len]...)
     bool haptic82 = (cmd == 0x82 && len <= pln);
-    bool relayOk = hapticRelaySlotOk(slot) && !(haptic82 && lizardActive());  // never push haptics to the controller while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
+    bool haptic82On = haptic82 && haptic82PayloadOn(pl, len);   // ON has nonzero gain; a STOP/OFF does not
+    bool relayOk = hapticRelaySlotOk(slot) && !(haptic82On && lizardActive());  // block only haptic-ON in lizard (would buzz-loop); always let the STOP through so a buzz can be cleared
     if (relayOk && (!haptic82 || !haptic82Blocked())) {
       uint16_t m = n > sizeof g_relayBuf ? sizeof g_relayBuf : n;
       memcpy(g_relayBuf, b, m); g_relayN = m; g_relayPend = true;
