@@ -1,40 +1,28 @@
-// status_led.h -- two-LED status + wake indicator (PWM-dimmed).
+// status_led.h -- LED indication of wake activity.
 //
-//   Awake (bus not suspended):        BLUE on, dim                         RED off
-//   Asleep / wake-armed (suspended):  BLUE off                            RED dim blink every ~2s
-//   Asleep + a wake is being sent:    BLUE flashes bright (~500ms)        RED keeps blinking
+// The LED is DARK in all steady states -- including while wake is armed (host suspended) -- and flashes for
+// half a second at the moment a wake is actually sent (USBDevice.remoteWakeup() fired by a Steam-button short
+// press, a controller connect, or the boot-time wake). This turns the LED into a wake debugger you can read
+// from the couch: flash + PC stays asleep = the resume signal was sent and the HOST ignored it (fix on the
+// host: powercfg /deviceenablewake); no flash = the firmware never fired (it didn't see the gesture, or it
+// didn't consider the bus suspended).
 //
-// So at a glance: steady dim blue = running; slow dim red heartbeat = host asleep & we're armed to wake it;
-// blue flash = we just fired a wake (if the PC then stays asleep, the host ignored our resume -- see
-// "Wake from sleep" in ARCHITECTURE.md).
-//
-// Pin/level config: the sketch builds with the Feather variant but the hardware is a "Pro Micro" nRF52840
-// clone, so these are the board's actual user-LED GPIOs, not the Feather's. Defaults are a best guess for the
-// SuperMini clone (blue P0.15 = D24, red P1.15 = D3, active-high). If the two colors are swapped, swap the
-// pins; if a color never lights, it's on a different GPIO -- override here.
+// Board note: the sketch is built with the Feather nRF52840 variant, but the usual hardware is a SuperMini
+// "Pro Micro" clone. The Feather's user LED is P1.15 (D3, active high); the SuperMini's blue user LED is
+// P0.15 (= D24 in the Feather pin map -- SPI MISO, unused by this project). We drive BOTH pins so the
+// indicator works on either board. Override the pins/polarity below if your board differs.
 #pragma once
 
-#ifndef LED_BLUE_PIN
-#define LED_BLUE_PIN 24            // P0.15 (D24 in the Feather pin map)
+#ifndef WAKE_LED_PIN_A
+#define WAKE_LED_PIN_A LED_BUILTIN   // Feather: P1.15 user LED (harmless unconnected pad on SuperMini clones)
 #endif
-#ifndef LED_RED_PIN
-#define LED_RED_PIN  LED_BUILTIN   // P1.15 (D3)
+#ifndef WAKE_LED_PIN_B
+#define WAKE_LED_PIN_B 24            // SuperMini "Pro Micro" clone: P0.15 blue user LED (D24 in the Feather map)
 #endif
-#ifndef LED_ACTIVE_HIGH
-#define LED_ACTIVE_HIGH 1          // 1 = LED lit when pin driven high; set 0 for active-low boards
-#endif
-
-// brightness 0..255 (PWM duty)
-#ifndef LED_BLUE_DIM
-#define LED_BLUE_DIM   16          // "on, dim" steady blue during normal operation
-#endif
-#ifndef LED_BLUE_FLASH
-#define LED_BLUE_FLASH 255         // bright blue flash when a wake is sent
-#endif
-#ifndef LED_RED_DIM
-#define LED_RED_DIM    16          // dim red heartbeat while wake-armed
+#ifndef WAKE_LED_ON
+#define WAKE_LED_ON HIGH             // set LOW if your board's LED is wired active-low
 #endif
 
-void ledInit();        // call once from setup()
-void ledWakePulse();   // call at each USBDevice.remoteWakeup() site -> blue bright for ~500ms
-void ledTask();        // call every loop()
+void ledInit();        // call once from setup(): pins to output, LED off
+void ledWakePulse();   // call at each USBDevice.remoteWakeup() site: LED on now, off after 500ms
+void ledTask();        // call every loop(): times out the pulse
