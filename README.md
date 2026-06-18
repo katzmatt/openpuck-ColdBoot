@@ -39,6 +39,8 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 
 I'm also adding various QOL items as I go as well. For example having to hold the Steam button for like 6 seconds feels like an eternity. If Steam is open you can do Steam +Y for a shutdown. I'm adding Steam + Y for 2 seconds as a shutdown chort in ALL modes now.
 
+Note: to use the Switch mode on a real Switch you'll need to [enable the pro controller wired communication option](https://www.nintendo.com/en-gb/Support/Troubleshooting/How-to-Enable-Disable-Pro-Controller-Wired-Communication-1516284.html).
+
 ### A note on the Lizard mode:
 The Lizard mode behaves similarly to how the controller behaves when Steam is closed, but this will work even when Steam is open. This has a few advantages
 the biggest one being that you can use inputs when a high privilege application is in the foreground (like the Task Manager, when using Steam if you wanna be able to do that Steam must be run as admin).
