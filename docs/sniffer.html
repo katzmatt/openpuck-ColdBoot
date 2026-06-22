@@ -44,6 +44,7 @@
   <span style="flex:1"></span>
   <button id="reacq" disabled>Re-acquire</button>
   <button id="survey" disabled>Survey ch2</button>
+  <button id="forget" disabled>Forget bonds</button>
   <label class="note">lock ibex <input type="text" id="tgtIbex" placeholder="EF7171B4" style="width:84px;background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:4px;font:inherit"></label>
   <button id="setTgt" disabled>Lock</button>
   <label class="note">pin ch <input type="number" id="pinCh" min="1" max="80" placeholder="auto"></label>
@@ -60,6 +61,8 @@
   <span>P→C: <b id="npc">0</b></span>
   <span>C→P: <b id="ncp">0</b></span>
   <span>crc-bad: <b id="nbad">0</b></span>
+  <span>drops: <b id="ndrop">0</b></span>
+  <span>bond: <b id="nbond">none yet</b></span>
   <span>shown: <b id="nshown">0</b></span>
 </div>
 <div class="stats" style="border-top:none;padding-top:0">
@@ -101,7 +104,7 @@ async function connect(){
     await dev.claimInterface(ifNum);
     await dev.controlTransferOut({requestType:"class",recipient:"interface",request:0x22,value:0x01,index:ifNum});
     $("#state").textContent="connected"; $("#state").className="pill up"; $("#connect").textContent="Reconnect";
-    for(const id of ["cap","clear","dl","dltxt","reacq","survey","setTgt","setch","setsess"]) $("#"+id).disabled=false;
+    for(const id of ["cap","clear","dl","dltxt","reacq","survey","forget","setTgt","setch","setsess"]) $("#"+id).disabled=false;
     navigator.usb.addEventListener("disconnect",e=>{ if(e.device===dev) onGone(); });
     log(`connected — iface ${ifNum} epIn ${epIn} epOut ${epOut} — waiting for stream…`);
     rxBytes=0; gotData=false;
@@ -117,17 +120,21 @@ function append(buf){ const m=new Uint8Array(acc.length+buf.length); m.set(acc);
 function parse(){
   let i=0;
   while(i+2<=acc.length){
-    if(acc[i]===0xC1 && acc[i+1]===0xDE){            // status (19 bytes)
-      if(i+19>acc.length) break;
+    if(acc[i]===0xC1 && acc[i+1]===0xDE){            // status (22 bytes)
+      if(i+22>acc.length) break;
       acqState=acc[i+2];
       const ch=acc[i+3], b=acc.slice(i+4,i+8), pfx=acc[i+8];
       const advCh=acc[i+12], ab=acc.slice(i+13,i+17), apfx=acc[i+17], lastMatch=acc[i+18];
+      const drops=acc[i+19]|(acc[i+20]<<8);          // frames lost to a full ring on the device (0 = lossless)
+      const bondInfo=acc[i+21], camped=!!(bondInfo&0x80), nbonds=(bondInfo>>4)&0x7, bchans=bondInfo&0xF;
       sessTxt=`ch ${ch}  addr ${hex(b)}/${pfx.toString(16).padStart(2,"0")}  (last pipe ${lastMatch})`;
-      $("#acq").textContent=acqState===1?"CAPTURE (session locked)":"ACQUIRE (scanning ibex/ch2)";
+      $("#acq").textContent=acqState===1?(camped?"CAPTURE (auto-camped on learned bond)":"CAPTURE (session locked)"):"ACQUIRE (scanning ibex/ch2)";
       $("#acq").style.color=acqState===1?"#3fb950":"#d29922";
       $("#sess").textContent=sessTxt;
       $("#adv").textContent = advCh ? `ch ${advCh}  addr ${hex(ab)}/${apfx.toString(16).padStart(2,"0")}` : "— (no E1 yet)";
-      i+=19; continue;
+      const de=$("#ndrop"); if(de){ de.textContent=drops; de.style.color = drops? "#f85149" : "#3fb950"; }
+      const be=$("#nbond"); if(be){ be.textContent = nbonds? `${nbonds} learned${camped?` · camped (${bchans} ch)`:""}` : "none yet"; be.style.color = camped? "#3fb950" : (nbonds?"#d29922":"#8b949e"); }
+      i+=22; continue;
     }
     if(acc[i]===0xC0 && acc[i+1]===0xDE){            // packet
       if(i+3>acc.length) break;
@@ -144,19 +151,39 @@ function parse(){
   acc=acc.slice(i);
 }
 let allFrames=[], seqCtr=0, nShown=0;          // ring of recent frames so filters can re-render; seq = stable # column
+let lastShownSeq=0, dirty=false;               // throttled-render bookkeeping (see renderTick)
 const FRAMEBUF=8000;
+// Hot path (runs per frame at the full capture rate, inside the USB read loop): keep it CHEAP so transferIn is
+// never blocked -- a blocked read backs up the device FIFO, stalls its drain, and makes the on-device ring drop
+// (the `drops` counter). So we store the raw bytes and defer the expensive hex-string formatting (ensureHex) and
+// all DOM work to a throttled renderTick that only touches frames actually displayed/exported.
 function onPacket(t_us,ch,crc,rssi,match,raw){
   // raw = [LENGTH, S1, payload...]; opcode = raw[2]; dir from opcode high nibble
   const op=raw.length>2?raw[2]:0;
   const dir=(op&0xF0)===0xE0?"P→C":(op&0xF0)===0xF0?"C→P":"?";
   if(dir==="P→C")nPC++; else if(dir==="C→P")nCP++; if(!crc)nBad++;
-  const payload=raw.slice(2);                        // from opcode onward (what we care about)
-  const ent={seq:++seqCtr,t_us,ms:(t_us/1000),ch,pipe:match,dir,op:op.toString(16).padStart(2,"0"),crc,rssi:-rssi,len:raw.length>0?raw[0]:0,raw:hex(raw),payload:hex(payload)};
+  const ent={seq:++seqCtr,t_us,ms:(t_us/1000),ch,pipe:match,dir,op:op.toString(16).padStart(2,"0"),crc,rssi:-rssi,len:raw.length>0?raw[0]:0,bytes:raw};
   if(capturing) rec.push(ent);
-  allFrames.push(ent); if(allFrames.length>FRAMEBUF) allFrames.shift();
-  if(passesFilter(ent)) addRow(ent);
-  $("#npc").textContent=nPC; $("#ncp").textContent=nCP; $("#nbad").textContent=nBad; $("#nrec").textContent=rec.length;
+  allFrames.push(ent);
+  if(allFrames.length>FRAMEBUF*2) allFrames.splice(0,allFrames.length-FRAMEBUF); // bulk trim, amortized O(1) (was per-frame shift = O(n))
+  dirty=true;
 }
+// Lazily fill in the hex strings only when a frame is rendered, filtered-by-hex, or exported -- never in the hot path.
+function ensureHex(e){ if(e.raw===undefined){ e.raw=hex(e.bytes); e.payload=hex(e.bytes.subarray(2)); } return e; }
+// Render the table on a display-rate tick instead of per frame: append only the frames newer than the last shown,
+// so DOM work is bounded by the screen refresh, not the 500+/s capture rate.
+function renderTick(){
+  if(dirty){
+    dirty=false;
+    let i=allFrames.length-1; const fresh=[];
+    while(i>=0 && allFrames[i].seq>lastShownSeq){ fresh.push(allFrames[i]); i--; }
+    for(let k=fresh.length-1;k>=0;k--){ const e=fresh[k]; if(passesFilter(e)) addRow(e); }
+    if(allFrames.length) lastShownSeq=allFrames[allFrames.length-1].seq;
+    $("#npc").textContent=nPC; $("#ncp").textContent=nCP; $("#nbad").textContent=nBad; $("#nrec").textContent=rec.length;
+  }
+  requestAnimationFrame(renderTick);
+}
+requestAnimationFrame(renderTick);
 const rows=$("#rows");
 function passesFilter(e){
   if($("#fHideRoutine").checked){                    // drop the 99% spam: input replies + bare polls
@@ -169,10 +196,11 @@ function passesFilter(e){
   if(lf==="ne49" && e.len===49) return false;
   if(lf==="gt49" && e.len<=49) return false;
   if(lf==="gt1"  && e.len<=1)  return false;
-  const hx=$("#filter").value.trim().toLowerCase().replace(/ /g,""); if(hx && !e.payload.replace(/ /g,"").includes(hx)) return false;
+  const hx=$("#filter").value.trim().toLowerCase().replace(/ /g,""); if(hx && !ensureHex(e).payload.replace(/ /g,"").includes(hx)) return false;
   return true;
 }
 function addRow(e){
+  ensureHex(e);
   const tr=document.createElement("tr");
   tr.className=(e.dir==="P→C"?"pc":e.dir==="C→P"?"cp":"")+(e.crc?"":" bad");
   tr.innerHTML=`<td>${e.seq}</td><td>${e.ms.toFixed(1)}</td><td class="dir">${e.dir}</td><td>${e.ch}</td><td>${e.pipe}</td><td>${e.op}</td><td>${e.crc?"ok":"BAD"}</td><td>${e.rssi}</td><td>${e.len}</td><td class="hex">${e.payload}</td>`;
@@ -185,6 +213,7 @@ function addRow(e){
 function applyFilters(){                              // re-render visible table from the buffer with current filters
   rows.innerHTML=""; nShown=0;
   for(const e of allFrames.slice(-MAXROWS)) if(passesFilter(e)) addRow(e);
+  lastShownSeq=allFrames.length?allFrames[allFrames.length-1].seq:0; // keep renderTick appending after a manual re-render
 }
 for(const id of ["fHideRoutine","fDir","fOp","fLen","filter"]) $("#"+id).addEventListener("input",applyFilters);
 async function readLoop(){
@@ -211,8 +240,9 @@ $("#cap").onclick=async()=>{
   else{ await cmd(0x02); log(`CAP ENDED — ${rec.length} packets recorded`); }
   $("#nrec").textContent=rec.length;
 };
-$("#clear").onclick=()=>{ rec=[]; allFrames=[]; seqCtr=0; rows.innerHTML=""; nPC=nCP=nBad=nShown=0; for(const id of ["nrec","npc","ncp","nbad","nshown"]) $("#"+id).textContent=0; };
+$("#clear").onclick=()=>{ rec=[]; allFrames=[]; seqCtr=0; lastShownSeq=0; dirty=false; rows.innerHTML=""; nPC=nCP=nBad=nShown=0; for(const id of ["nrec","npc","ncp","nbad","nshown"]) $("#"+id).textContent=0; };
 $("#reacq").onclick=()=>{ $("#pinCh").value=""; cmd(0x03); log("re-acquire requested"); };
+$("#forget").onclick=()=>{ cmd(0x08); log("forgot all learned bonds — will relearn from the next E1"); };
 let surveying=false;
 $("#survey").onclick=()=>{ surveying=!surveying; $("#survey").classList.toggle("active",surveying); cmd(0x06); log(surveying?"SURVEY on — listing every E1 beacon on ch2 (no lock). Each distinct 'op e1' payload = one puck/slot session.":"survey off"); };
 $("#setTgt").onclick=()=>{ const v=$("#tgtIbex").value.trim().replace(/^0x/i,""); if(/^[0-9a-fA-F]{8}$/.test(v)){ const u=parseInt(v,16); cmd(0x07,u&0xff,(u>>8)&0xff,(u>>16)&0xff,(u>>24)&0xff); log("locking ibex_uuid 0x"+v.toUpperCase()+" — only that slot's E1 (then hunting its channels for F1)"); } else log("enter ibex_uuid as 8 hex digits from pairtui, e.g. EF7171B4"); };
@@ -225,9 +255,13 @@ $("#setsess").onclick=()=>{   // "b0 b1 b2 b3 pfx ch" -- base/prefix as hex, cha
   cmd(0x05,b[0],b[1],b[2],b[3],b[4],ch); log(`pinned session addr ${v.slice(0,4).join(" ")}/${v[4]} ch ${ch}`);
 };
 function save(name,text,type){ const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([text],{type})); a.download=name; a.click(); }
-$("#dl").onclick=()=>save("sniff-"+Date.now()+".json", JSON.stringify(rec,null,1), "application/json");
+$("#dl").onclick=()=>{
+  // materialize hex + drop the raw byte array so the JSON matches the old shape (seq,ms,ch,dir,op,crc,rssi,len,raw,payload)
+  const out=rec.map(e=>{ ensureHex(e); const{bytes,...r}=e; return r; });
+  save("sniff-"+Date.now()+".json", JSON.stringify(out,null,1), "application/json");
+};
 $("#dltxt").onclick=()=>{
-  const lines=rec.map(e=>`${e.ms.toFixed(1)}ms ch${e.ch} ${e.dir} ${e.crc?"":"BAD "}rssi${e.rssi} op=${e.op} | ${e.payload}`);
+  const lines=rec.map(e=>`${e.ms.toFixed(1)}ms ch${e.ch} ${e.dir} ${e.crc?"":"BAD "}rssi${e.rssi} op=${e.op} | ${ensureHex(e).payload}`);
   save("sniff-"+Date.now()+".txt", lines.join("\n"), "text/plain");
 };
 if(!navigator.usb) log("This browser has no WebUSB. Use Chrome/Edge over https or localhost.");

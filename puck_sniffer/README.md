@@ -28,39 +28,38 @@ WebUSB needs a secure context, so **not** a `file://` path. Either:
 
 Click **Connect sniffer**, pick *OpenPuck Sniffer*.
 
-## 3. Capture — the exact sequence (do it in this order)
+## 3. Capture — the exact sequence
 
-Why order matters: the link is Nordic **Gazell** — the on-air address is random per session, and **a *connected*
-slot never beacons on ch2; only a *reconnecting* one does.** So you can't lock onto an already-connected
-controller — you must catch its **reconnect**. The bond's **ibex_uuid is stable** across reconnects (only the
-address changes), so we anchor the lock on that uuid and force a reconnect.
+The link is Nordic **Gazell**. A controller's **bonded on-air address is fixed at pairing and REUSED on every
+reconnect** (reconnect is a silent ESB resume — no fresh address, no guaranteed ch2 re-beacon), and the session
+hops a small **stable** channel map. So the sniffer **learns each bond once** — it persists the session
+(base/prefix/channel) to flash keyed by the bond's **ibex_uuid** and remembers which channels carry its replies —
+and from then on **auto-camps** straight onto it, catching the next clean reconnect with **no ch2 catch and no
+manual pinning**.
 
 ### Setup (once)
 1. **Unplug the copycat** (the OpenPuck dev board) if it's plugged in — it beacons its own `E1`s and pollutes
    ch2. Leave only: the **real Valve puck**, the **controller**, and the **sniffer board**.
-2. Controller connected to the **real puck** (Steam sees it). With `pairtui` (see `../pairtui/`), note the
-   connected slot's **ibex_uuid** (e.g. `EF7171B4`) — it's the bond id, stable across sessions.
+2. With `pairtui` (see `../pairtui/`), note the connected slot's **ibex_uuid** (e.g. `EF7171B4`).
 
-### Arm the sniffer
+### First run — teach it the bond (one time per controller)
 3. Flash the sniffer, open the app (`docs/sniffer.html` over localhost/https — not `file://`), **Connect** →
    *OpenPuck Sniffer*. Confirm **rx** is climbing.
-4. In **lock ibex**, type the uuid (`EF7171B4`), click **Lock**. Status → **ACQUIRE** (waiting on ch2 for *only*
-   that slot's `E1`; ignores other slots and the copycat).
-5. Click **● Start Cap**.
+4. In **lock ibex**, type the uuid (`EF7171B4`), click **Lock**.
+   - If **bond** shows `… camped`, it already knows this controller → skip to step 6.
+   - Otherwise status is **ACQUIRE** (waiting on ch2 for that slot's `E1`).
+5. Click **● Start Cap**, then **power-cycle the controller** (hold power until off, ~2 s, back on). When its `E1`
+   is caught the sniffer locks the session, **persists the bond**, and the **bond** stat shows `1 learned · camped`.
 
-### Trigger (the step that's easy to miss)
-6. **Power-cycle the controller** — hold its power button until it turns **off**, wait ~2 s, turn it back **on**.
-   On reconnect it re-runs ch2 discovery and broadcasts slot 3's `E1` (matching the uuid) with a **fresh** session
-   address → the sniffer matches the uuid, locks that session, and hunts its channels.
-7. Watch the app: link → **CAPTURE (session locked)** and **`C→P` climbs**. Wiggle sticks / trackpad to keep
-   traffic flowing.
+### Every run after — just capture the reconnect
+6. With the bond known, the link goes **CAPTURE (auto-camped on learned bond)** on its own (on plug-in if it's the
+   only bond, or the moment you **Lock** its uuid). **Power-cycle the controller** and its reconnect is captured
+   from the first packets — `C→P` climbs with no further steps.
+7. Wiggle sticks / trackpad to keep traffic flowing; do the thing in Steam (change brightness / LED, or turn off).
+8. **■ End Cap → Download.**
 
-### Capture the action
-8. With `C→P` climbing, do the thing in Steam (change brightness / LED, or turn off).
-9. **■ End Cap → Download.**
-
-**Always: Lock the uuid → Start Cap → *then* power-cycle.** The most common failure is the controller silently
-auto-reconnecting *before* the lock is armed, so its `E1` is never caught.
+> **Forget bonds** clears the learned store (relearn from the next `E1`). Use it if a controller was re-paired
+> (its bonded address changed). The learned channel set self-corrects as new reply channels are observed.
 
 Direction: `P→C` (opcode `0xE_`, puck→controller — LED/shutoff/brightness commands ride here) vs `C→P` (`0xF_`,
 controller→puck — input + battery/telemetry).
@@ -112,5 +111,7 @@ bypasses auto-acquire entirely, which is the reliable path if the real puck's `E
 
 ## Stream protocol (WebUSB bulk)
 - packet: `C0 DE [N] [t_us:4 LE] [ch] [flags] [rssi] [match] [N raw bytes]`  (flags bit0 = CRC ok; match = RXMATCH pipe; raw = `[LEN][S1][payload]`)
-- status: `C1 DE [state] [curCh] [base:4] [prefix] [cap] [hb:2] [advCh] [advBase:4] [advPfx] [lastMatch]`  (19 B; adv* = session parsed from the last `E1`)
-- commands (bulk OUT): `01` start · `02` stop · `03` re-acquire · `04 <ch>` pin channel · `05 <b0 b1 b2 b3 pfx ch>` pin full session
+- status: `C1 DE [state] [curCh] [base:4] [prefix] [cap] [hb:2] [advCh] [advBase:4] [advPfx] [lastMatch] [drops:2 LE] [bond]`  (22 B; adv* = session parsed from the last `E1`; `drops` = frames lost to a full on-device ring, `0` = lossless capture; `bond` bit7 = camped on a learned bond, bits4-6 = #bonds stored, bits0-3 = #channels learned for the camped bond)
+- commands (bulk OUT): `01` start · `02` stop · `03` re-acquire (un-camp) · `04 <ch>` pin channel · `05 <b0 b1 b2 b3 pfx ch>` pin full session · `06` survey · `07 <u0 u1 u2 u3>` lock ibex_uuid (auto-camps if the bond is already learned) · `08` forget all learned bonds
+
+Learned bonds persist in flash (`/sniffbonds.bin`, keyed by ibex_uuid: session base/prefix/channel + observed reply channels), so after one successful learn the sniffer auto-camps on the controller's stable bonded address and catches its reconnects with no manual steps.
