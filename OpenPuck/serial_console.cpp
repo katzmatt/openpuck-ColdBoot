@@ -214,34 +214,51 @@ void serialConsolePoll()
 					"# xbox-mouse friction=%d%% (higher=more glide/momentum)\n",
 					g_mFric);
 			} else if (line[0] == 'W') {
-				g_abSwap = !g_abSwap;
-				saveCfg();
-				Serial.printf(
-					"# A/B + X/Y swap %s (Nintendo layout)\n",
-					g_abSwap ? "ON" : "off");
+				// A/B swap edits the ACTIVE emulated type (Xbox/Switch/DS4/DS5); puck modes have none.
+				if (g_etype < ET_COUNT) {
+					g_type[g_etype].abSwap =
+						!g_type[g_etype].abSwap;
+					applyActiveType();
+					saveCfg();
+					Serial.printf(
+						"# A/B + X/Y swap %s (Nintendo layout) [type %u]\n",
+						g_abSwap ? "ON" : "off", g_etype);
+				} else
+					Serial.println(
+						"# A/B swap N/A in this mode (Steam/Lizard are not emulated types)");
 			} else if (line[0] == 'K') {
 				int i = line[1] - '0';
 				uint8_t code = strtoul(line + 2, 0, 10);
-				if (i >= 0 && i < 4) {
-					g_back[i] = code;
+				// back paddles edit the ACTIVE emulated type. code 18 = Capture/Screenshot (Switch only).
+				if (i >= 0 && i < 4 && g_etype < ET_COUNT) {
+					g_type[g_etype].back[i] = code;
+					applyActiveType();
 					saveCfg();
 					Serial.printf(
-						"# back[%d] (%s) -> code %u  [0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=QAM 11=Guide 12=Dup 13=Ddown 14=Dleft 15=Dright 16=TouchClick 17=Mute]\n",
+						"# back[%d] (%s) -> code %u [type %u]  [0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=QAM 11=Guide 12=Dup 13=Ddown 14=Dleft 15=Dright 16=TouchClick 17=Mute 18=Capture(Switch) 19=LT/L2/ZL 20=RT/R2/ZR]\n",
 						i,
 						(const char *[]){ "L4", "R4",
 								  "L5",
 								  "R5" }[i],
-						code);
-				} else
+						code, g_etype);
+				} else if (g_etype >= ET_COUNT)
+					Serial.println(
+						"# back map N/A in this mode (Steam/Lizard are not emulated types)");
+				else
 					Serial.println(
 						"# usage: K<0-3> <code>  (0=L4 1=R4 2=L5 3=R5)");
 			} else if (line[0] == 'Q') {
 				uint8_t code = strtoul(line + 1, 0, 10);
-				g_qamMap = code;
-				saveCfg();
-				Serial.printf(
-					"# QAM -> code %u  [0=default 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=QAM 11=Guide 12=Dup 13=Ddown 14=Dleft 15=Dright 16=TouchClick 17=Mute]\n",
-					code);
+				if (g_etype < ET_COUNT) {
+					g_type[g_etype].qamMap = code;
+					applyActiveType();
+					saveCfg();
+					Serial.printf(
+						"# QAM -> code %u [type %u]  [0=default 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=QAM 11=Guide 12=Dup 13=Ddown 14=Dleft 15=Dright 16=TouchClick 17=Mute 18=Capture(Switch) 19=LT/L2/ZL 20=RT/R2/ZR]\n",
+						code, g_etype);
+				} else
+					Serial.println(
+						"# QAM map N/A in this mode (Steam/Lizard are not emulated types)");
 			} else if (line[0] == 'J') {
 				char *sp = 0;
 				uint8_t id = strtoul(line + 1, &sp, 0);

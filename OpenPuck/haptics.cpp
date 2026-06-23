@@ -386,6 +386,24 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1)
 // register writes). Brightness (reg 0x2D) is omitted to avoid stomping the LED. The 0x87 frames go out on
 // legacy framing so the controller discards them; the three 0x81 frames are the effective reset. slot=0xFF
 // broadcasts to all connected controllers (the re-init is settings-only and harmless on healthy controllers).
+// One-shot SET_SETTINGS (0x87) write of the controller's GLOBAL trackpad-haptics enable. The controller plays
+// touchpad haptic sequences autonomously (haptics-sequencer-touchpad) gated by settings/haptics/enabled; in the
+// emulated (non-Steam) modes the host never sends SC haptic reports, so the only way to silence the pad buzz is
+// to write this setting. Wire format [id][val u16 LE] -- confirmed from the controller's SET_SETTINGS handler
+// (decomp FUN_0001f61c; id 0x30 == settings/sensors/imu/mode is the cross-check anchor in the same id space).
+// The exact id for settings/haptics/enabled needs a one-time `scmd labels` HW read (candidates from the captured
+// reinit: 0x18 / 0x2e / 0x34 / 0x35). Until it is set, SETTING_HAPTICS_ENABLED stays 0xFF and this is inert.
+#define SETTING_HAPTICS_ENABLED 0xFF
+void hapticSetPadEnabled(uint8_t slot, bool on)
+{
+#if SETTING_HAPTICS_ENABLED != 0xFF
+	uint8_t pl[3] = { SETTING_HAPTICS_ENABLED, (uint8_t)(on ? 1 : 0), 0 };
+	relayEnqueue(0x87, pl, 3, slot);
+#else
+	(void)slot;
+	(void)on;
+#endif
+}
 void hapticReinit(uint8_t slot)
 {
 	static const uint8_t H30[] = { 0x30, 0x00, 0x00, 0x07, 0x07,
@@ -410,6 +428,10 @@ void hapticReinit(uint8_t slot)
 	relayEnqueue(0x87, H35, sizeof H35, slot);
 	relayEnqueue(0x81, T81A, sizeof T81A, slot);
 	relayEnqueue(0x81, T81B, sizeof T81B, slot);
+	// Re-apply the active emulated type's trackpad-haptics preference last (after the haptic-config writes
+	// above, which would otherwise re-enable it). Default-on types send "enable"; Switch (padHaptics=0)
+	// disables. Inert until the setting id is captured.
+	hapticSetPadEnabled(slot, g_padHaptics != 0);
 }
 void hapticInit()
 {

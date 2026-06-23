@@ -11,15 +11,17 @@
 
 Adafruit_USBD_WebUSB usb_web;
 
-// blob payload = [ver=8][mode][mDiv][mFric][rsvd=0][abSwap][back0..3][connSlot(0xFF=none)][linkUp]
+// blob payload = [ver=9][mode][mDiv][mFric][qamMap(active)][abSwap(active)][back0..3(active)][connSlot(0xFF=none)][linkUp]
 //                [f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub][fwdNewOnly]
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
 //                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
 //                [gitDirty][gitHash 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10][raw accel ax ay az 3x s16 LE]
 //                [bondedCount][slot0_up][slot0_batt][slot0_rssi]...[slot3_up][slot3_batt][slot3_rssi]
-// v8 extends to 73 bytes (75 total incl header); browser reads with transferIn(128) to span the two USB-FS packets.
-#define WB_PAYLEN 73
+//                [v9: per-type cfg, 4x7B: ET_XBOX/SWITCH/DS4/DS5 each {back0..3, qam, abSwap, padHaptics}]
+// p[6]/p[7]/p[8..11] mirror the ACTIVE type (legacy display). v9 extends to 101 bytes (103 total incl header);
+// browser reads with transferIn(128) to span the two USB-FS packets.
+#define WB_PAYLEN 101
 static void webusbSendBlob()
 {
 	if (!usb_web.connected())
@@ -33,8 +35,8 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 8;
+	// protocol version (9 = +per-type cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
+	p[2] = 9;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -112,6 +114,17 @@ static void webusbSendBlob()
 			p[64 + s * 3] = g_battery[s];
 			p[65 + s * 3] = g_linkRssi[s];
 		}
+	}
+	// per-emulated-type button config (protocol v9): 4 types x 7 bytes from p[75]
+	for (int et = 0; et < ET_COUNT; et++) {
+		uint8_t *q = &p[75 + et * 7];
+		q[0] = g_type[et].back[0];
+		q[1] = g_type[et].back[1];
+		q[2] = g_type[et].back[2];
+		q[3] = g_type[et].back[3];
+		q[4] = g_type[et].qamMap;
+		q[5] = g_type[et].abSwap;
+		q[6] = g_type[et].padHaptics;
 	}
 	usb_web.write(p, sizeof p);
 	usb_web.flush();
@@ -241,6 +254,30 @@ void webusbPoll()
 
 				// every settable field persists (poll rate is no longer settable)
 				bool persist = true;
+				// per-type cfg writes (protocol v9): field = 40 + et*8 + k, k: 0..3 back, 4 qam, 5 abSwap,
+				// 6 padHaptics. Edits g_type[et]; refresh the live mirrors if it's the active type.
+				if (f >= 40 && f < 40 + ET_COUNT * 8) {
+					uint8_t et = (uint8_t)((f - 40) / 8),
+						k = (uint8_t)((f - 40) % 8);
+					if (et < ET_COUNT) {
+						if (k < 4)
+							g_type[et].back[k] = v;
+						else if (k == 4)
+							g_type[et].qamMap = v;
+						else if (k == 5)
+							g_type[et].abSwap = v ? 1 : 0;
+						else if (k == 6)
+							g_type[et].padHaptics =
+								v ? 1 : 0;
+						if (et == g_etype)
+							applyActiveType();
+					}
+					saveCfg();
+					webusbSendBlob();
+					memmove(buf, buf + need, n - need);
+					n -= need;
+					continue;
+				}
 				switch (f) {
 				case 1:
 					g_mDiv = v < 4 ? 4 : v;
@@ -249,14 +286,21 @@ void webusbPoll()
 					g_mFric = v > 99 ? 99 : v;
 					break;
 				// case 3 (padSmooth) removed -- Steam-mode pad coords are forwarded raw; Steam does its own smoothing.
+				// Legacy single-value fields (4 abSwap, 5-8 back, 21 qam) edit the ACTIVE emulated type.
 				case 4:
-					g_abSwap = v ? 1 : 0;
+					if (g_etype < ET_COUNT) {
+						g_type[g_etype].abSwap = v ? 1 : 0;
+						applyActiveType();
+					}
 					break;
 				case 5:
 				case 6:
 				case 7:
 				case 8:
-					g_back[f - 5] = v;
+					if (g_etype < ET_COUNT) {
+						g_type[g_etype].back[f - 5] = v;
+						applyActiveType();
+					}
 					break;
 				// case 9 (pollU100) removed -- poll rate is fixed at POLL_US_DEFAULT and no longer configurable.
 
@@ -310,9 +354,12 @@ void webusbPoll()
 					NVIC_SystemReset();
 					break;
 
-				// QAM physical button remap code (0=default/unmapped)
+				// QAM physical button remap code (0=default/unmapped) -- active emulated type
 				case 21:
-					g_qamMap = v;
+					if (g_etype < ET_COUNT) {
+						g_type[g_etype].qamMap = v;
+						applyActiveType();
+					}
 					break;
 
 				// rumble strength % (0=off, 100=1x, 200=double)
@@ -322,7 +369,7 @@ void webusbPoll()
 
 				// Switch Pro report rate (0=66Hz,1=120Hz,2=full)
 				case 23:
-					g_swProRate = (v <= 2) ? v : 1;
+					g_swProRate = (v <= 2) ? v : 2;
 					swProSaveCfg();
 					persist = false;
 					break;

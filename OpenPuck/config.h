@@ -56,6 +56,35 @@ static inline bool modeValid(uint8_t m)
 	return m <= MODE_MAX;
 }
 
+// ---- Emulated controller TYPES. Button-remap config (back paddles / QAM / A-B swap / trackpad haptics) is kept
+//      per-type, not per-mode: the right mapping depends on what controller we present, and the variant modes of
+//      one controller share it. Steam + Lizard are native puck presentations -- they forward raw input to Steam,
+//      which does its own remapping -- so they are NOT emulated types (ET_NONE) and ignore this config. ----
+#define ET_XBOX 0
+#define ET_SWITCH 1
+#define ET_DS4 2
+#define ET_DS5 3
+#define ET_COUNT 4
+#define ET_NONE 0xFF
+static inline uint8_t etypeForMode(uint8_t m)
+{
+	switch (m) {
+	case MODE_XBOX:
+		return ET_XBOX;
+	case MODE_SW_HORI:
+	case MODE_SW_PRO:
+		return ET_SWITCH;
+	case MODE_HIDGYRO:
+	case MODE_DS4_GAME:
+		return ET_DS4;
+	case MODE_PS5:
+	case MODE_PS5_GAME:
+		return ET_DS5;
+	default:
+		return ET_NONE; // Steam / Lizard
+	}
+}
+
 extern uint8_t g_usbMode; // loaded from flash at boot
 
 // true for all non-puck presentations (cached !modeIsPuck(g_usbMode))
@@ -79,12 +108,29 @@ void armDebugCdcNextBoot(); // persist the one-shot (caller reboots)
 
 // persisted, runtime-tunable config:
 extern int g_mDiv, g_mFric; // xbox/lizard mouse sensitivity divisor / friction%
-extern uint8_t g_abSwap; // 1 = swap A/B and X/Y (Nintendo face-button layout)
 
-// back paddles L4,R4,L5,R5 -> button codes (0..15 standard, 16=PS Touch Click, 17=PS5 Mute)
+// Per-emulated-type button config. One entry per ET_* type. back[] = paddle L4,R4,L5,R5 -> button codes
+// (0..15 standard, 16=PS Touch Click, 17=PS5 Mute, 18=Switch Capture/Screenshot). qamMap = QAM (3 dots)
+// physical button -> same code space (0 = default/unmapped). abSwap = swap A/B and X/Y (Nintendo layout).
+// padHaptics = 1 keeps the controller's autonomous trackpad haptics, 0 disables them for this type.
+struct TypeCfg {
+	uint8_t back[4];
+	uint8_t qamMap;
+	uint8_t abSwap;
+	uint8_t padHaptics;
+};
+extern TypeCfg g_type[ET_COUNT];
+extern uint8_t g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)
+
+// Live, resolved-active-type mirrors of g_type[g_etype], read by the hot-path mode builders. Refreshed by
+// applyActiveType() at boot and after any edit to the active type.
+extern uint8_t g_abSwap; // 1 = swap A/B and X/Y (Nintendo face-button layout)
 extern uint8_t g_back[4];
-// QAM (3 dots) physical button -> same code space (0 = default/unmapped)
 extern uint8_t g_qamMap;
+extern uint8_t g_padHaptics; // 1 = trackpad haptics on (default), 0 = disabled for the active type
+
+// Copy g_type[g_etype] into the live mirrors above (safe defaults when g_etype == ET_NONE).
+void applyActiveType();
 // rumble strength, percent of decoded amplitude (100 = 1x, 200 = 2x default), all modes
 extern uint8_t g_rumbleScale;
 // Switch Pro motion settings. Persisted in their OWN flash file (mode_switch_pro.cpp), NOT in Cfg -- so changing

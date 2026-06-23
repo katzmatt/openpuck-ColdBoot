@@ -154,23 +154,15 @@
     <div class="card">
       <h2>Switch Pro motion</h2>
       <div class="row"><label>Report rate</label><select id="swRate"></select></div>
-      <p class="note" style="margin:0 0 6px">120 Hz (default) is low-latency and drift-free. 66 Hz is a genuine-cadence compatibility fallback. Full rate (~250 Hz) is lowest-latency but non-genuine — use only if your console tolerates it.</p>
+      <p class="note" style="margin:0 0 6px">Full rate (~250 Hz, default) is lowest-latency. 120 Hz is low-latency and drift-free. 66 Hz is a genuine-cadence compatibility fallback — drop to it only if your console rejects the faster rates.</p>
       <div class="row"><label>Gyro scale</label><select id="swGyro"></select></div>
       <p class="note">Gyro sensitivity multiplier for Switch Pro mode (1.0× = unchanged).</p>
     </div>
 
     <div class="card">
       <h2>Button mapping</h2>
-      <div class="row"><label>A/B + X/Y swap</label>
-        <button id="abSwap">off</button>
-        <span class="note" style="flex:1">Nintendo layout (affects Xbox &amp; Switch modes)</span>
-      </div>
-      <div class="row"><label>L4 (back upper-left)</label><select class="back" data-i="0"></select></div>
-      <div class="row"><label>R4 (back upper-right)</label><select class="back" data-i="1"></select></div>
-      <div class="row"><label>L5 (back lower-left)</label><select class="back" data-i="2"></select></div>
-      <div class="row"><label>R5 (back lower-right)</label><select class="back" data-i="3"></select></div>
-      <div class="row"><label>QAM (3 dots)</label><select id="qamMap"></select></div>
-      <p class="note">Back-paddle → button, applied in Xbox &amp; Switch modes. QAM remap applies to all modes (0 = default per-mode behavior).</p>
+      <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
+      <div id="typeCfgs"></div>
     </div>
 
     <div class="card logonly">
@@ -192,25 +184,86 @@
 <script>
 const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)"];
 const CHORD_FIELD = [17, 18, 19];
-const BTN_CODES = [[0,"— none —"],[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"LB"],[6,"RB"],[7,"L3"],[8,"R3"],[9,"Back"],[10,"Quick Access Menu"],[11,"Guide"],[12,"D-pad Up"],[13,"D-pad Down"],[14,"D-pad Left"],[15,"D-pad Right"],[16,"PS Touch Click"],[17,"PS5 Mute"]];
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false;
 const $ = s=>document.querySelector(s);
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
 
-// populate back-paddle + chord dropdowns
-for(const sel of document.querySelectorAll("select.back")){
-  for(const [c,n] of BTN_CODES){ const o=document.createElement("option"); o.value=c; o.textContent=n; sel.appendChild(o); }
+// Per-emulated-type config (must match firmware ET_* order: Xbox=0, Switch=1, DS4=2, DS5=3). Each type lists
+// only the remap targets that exist on that controller. Field id sent to firmware = 40 + et*8 + k
+// (k: 0..3 back paddles, 4 QAM, 5 A/B-swap, 6 trackpad-haptics). Blob v9 reads them back at p[75 + et*7 + ...].
+const DPAD = {12:"D-pad Up",13:"D-pad Down",14:"D-pad Left",15:"D-pad Right"};
+const TYPE_DEFS = [
+  {key:"XBOX", name:"Xbox", labels:{1:"A",2:"B",3:"X",4:"Y",5:"LB",6:"RB",7:"L3",8:"R3",9:"Back",10:"Start",11:"Guide",19:"LT",20:"RT",...DPAD}},
+  {key:"SWITCH", name:"Switch", labels:{1:"A",2:"B",3:"X",4:"Y",5:"L",6:"R",7:"L-Stick",8:"R-Stick",9:"Minus",10:"Plus",11:"Home",19:"ZL",20:"ZR",...DPAD,18:"Capture / Screenshot"}},
+  {key:"DS4", name:"DS4", labels:{1:"Cross",2:"Circle",3:"Square",4:"Triangle",5:"L1",6:"R1",7:"L3",8:"R3",9:"Create",10:"Options",11:"PS",19:"L2",20:"R2",...DPAD,16:"Touchpad Click"}},
+  {key:"DS5", name:"DS5", labels:{1:"Cross",2:"Circle",3:"Square",4:"Triangle",5:"L1",6:"R1",7:"L3",8:"R3",9:"Create",10:"Options",11:"PS",19:"L2",20:"R2",...DPAD,16:"Touchpad Click",17:"Mute"}},
+];
+// Which emulated type a USB mode belongs to (mirror of firmware etypeForMode); -1 = puck mode (no type).
+function etypeForMode(m){ switch(m){case 1:return 0; case 2:case 4:return 1; case 6:case 8:return 2; case 5:case 7:return 3; default:return -1;} }
+const BACK_LABELS = ["L4 (back upper-left)","R4 (back upper-right)","L5 (back lower-left)","R5 (back lower-right)"];
+const typeEls = []; // per-type {sec, abSwap, pad, back[4], qam}
+function mkSelect(def, includeNone){
+  const sel=document.createElement("select");
+  if(includeNone){ const o=document.createElement("option"); o.value=0; o.textContent="— none —"; sel.appendChild(o); }
+  else { const o=document.createElement("option"); o.value=0; o.textContent="Default (per-mode)"; sel.appendChild(o); }
+  for(const c of Object.keys(def.labels).map(Number).sort((a,b)=>a-b)){
+    const o=document.createElement("option"); o.value=c; o.textContent=def.labels[c]; sel.appendChild(o); }
+  return sel;
 }
-{ const sel = document.getElementById("qamMap");
-  const d = document.createElement("option"); d.value=0; d.textContent="Default (varies by mode)"; sel.appendChild(d);
-  for(const [c,n] of BTN_CODES){ if(c===0) continue; const o=document.createElement("option"); o.value=c; o.textContent=n; sel.appendChild(o); }
+let curTab=0, tabInited=false;
+function setTab(et){
+  curTab=et;
+  typeEls.forEach((rec,i)=>{
+    rec.sec.style.display = (i===et) ? "" : "none";
+    rec.tab.classList.toggle("active", i===et);
+  });
 }
+(function buildTypeCfgs(){
+  const host=document.getElementById("typeCfgs");
+  const bar=document.createElement("div"); bar.style.cssText="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px";
+  host.appendChild(bar);
+  TYPE_DEFS.forEach((def,et)=>{
+    // tab button
+    const tab=document.createElement("button"); tab.className="slot-tab"; tab.style.cursor="pointer";
+    tab.innerHTML='<span>'+def.name+'</span><span class="active-dot" style="display:none;font-size:11px;color:var(--acc)"> ●</span>';
+    tab.onclick=()=>setTab(et); bar.appendChild(tab);
+    // panel
+    const sec=document.createElement("div"); sec.style.cssText="background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:12px 14px;display:none";
+    const rec={sec,tab,activeDot:tab.querySelector(".active-dot"),back:[],qam:null,abSwap:null,pad:null};
+    // A/B swap + trackpad haptics toggles
+    const tog=document.createElement("div"); tog.className="row";
+    tog.innerHTML='<label>A/B + X/Y swap</label>';
+    const ab=document.createElement("button"); ab.textContent="off"; tog.appendChild(ab);
+    const padLbl=document.createElement("label"); padLbl.textContent="Trackpad haptics"; padLbl.style.marginLeft="14px"; tog.appendChild(padLbl);
+    const pad=document.createElement("button"); pad.textContent="on"; tog.appendChild(pad);
+    sec.appendChild(tog);
+    rec.abSwap=ab; rec.pad=pad;
+    ab.onclick=()=>{ const on=ab.classList.contains("active"); setField(40+et*8+5, on?0:1); };
+    pad.onclick=()=>{ const on=pad.classList.contains("active"); setField(40+et*8+6, on?0:1); };
+    // back paddles
+    for(let i=0;i<4;i++){
+      const row=document.createElement("div"); row.className="row";
+      const lab=document.createElement("label"); lab.textContent=BACK_LABELS[i]; row.appendChild(lab);
+      const sel=mkSelect(def,true); row.appendChild(sel); sec.appendChild(row);
+      sel.addEventListener("change",()=>setField(40+et*8+i, +sel.value));
+      rec.back.push(sel);
+    }
+    // QAM
+    { const row=document.createElement("div"); row.className="row";
+      const lab=document.createElement("label"); lab.textContent="QAM (3 dots)"; row.appendChild(lab);
+      const sel=mkSelect(def,false); row.appendChild(sel); sec.appendChild(row);
+      sel.addEventListener("change",()=>setField(40+et*8+4, +sel.value));
+      rec.qam=sel; }
+    host.appendChild(sec); typeEls.push(rec);
+  });
+  setTab(0);
+})();
 for(const sel of document.querySelectorAll("select.chord")){
   MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8) return;
     const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
 { const sel=document.getElementById("swRate");
-  for(const [lbl,v] of [["120 Hz (default)",1],["66 Hz (compatibility)",0],["Full rate (~250 Hz)",2]]){
+  for(const [lbl,v] of [["Full rate (~250 Hz, default)",2],["120 Hz",1],["66 Hz (compatibility)",0]]){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
 { const sel=document.getElementById("swGyro");
@@ -277,7 +330,7 @@ async function connect(){
   }catch(e){ log("connect failed: "+e.message); }
 }
 function onGone(){
-  polling=false; dev=null;
+  polling=false; dev=null; tabInited=false; // re-default the config tab to the mode on next connect
   $("#connState").textContent="disconnected"; $("#connState").className="pill dn";
   $("#panel").classList.add("hide");
   log("device disconnected (likely a mode-switch reboot — reconnect)");
@@ -300,8 +353,8 @@ async function readBlob(){
   }catch(e){ if(dev) log("read err: "+e.message); return null; }
 }
 function applyBlob(p){
-  const mode=p[1], mDiv=p[2], mFric=p[3], qamMap=p[4], abSwap=p[5];
-  const back=[p[6],p[7],p[8],p[9]], slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
+  const mode=p[1], mDiv=p[2], mFric=p[3]; // p[4..11] mirror the active type (per-type block below is authoritative)
+  const slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
   const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,4];
   const polls=(p.length>27?(p[26]|(p[27]<<8)):0);
@@ -316,7 +369,7 @@ function applyBlob(p){
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
   const battery=(p.length>36?p[36]:0);
   const rumbleScale=(p.length>51?p[51]:200);
-  const swProRate=(p.length>52?p[52]:1);
+  const swProRate=(p.length>52?p[52]:2);
   const swGyro10=(p.length>53?p[53]:10);
   const rssi=(p.length>37?p[37]:0);
 
@@ -413,10 +466,23 @@ function applyBlob(p){
     ? (gitHash + (gitDirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
     : "—";
   setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("rumble",rumbleScale);
-  $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
-  for(const sel of document.querySelectorAll("select.back")){ if(document.activeElement!==sel) sel.value=back[+sel.dataset.i]; }
-  { const sel=$("#qamMap"); if(document.activeElement!==sel) sel.value=qamMap; }
+  // per-type button config (blob v9): 4 types x 7 bytes from p[75]
+  if(p.length>=75+TYPE_DEFS.length*7){
+    const activeEt=etypeForMode(mode);
+    typeEls.forEach((rec,et)=>{
+      const q=75+et*7;
+      const back=[p[q],p[q+1],p[q+2],p[q+3]], qam=p[q+4], ab=p[q+5], pad=p[q+6];
+      rec.back.forEach((sel,i)=>{ if(document.activeElement!==sel) sel.value=back[i]; });
+      if(document.activeElement!==rec.qam) rec.qam.value=qam;
+      rec.abSwap.textContent=ab?"on":"off"; rec.abSwap.classList.toggle("active",!!ab);
+      rec.pad.textContent=pad?"on":"off"; rec.pad.classList.toggle("active",!!pad);
+      // dot marks the type matching the current puck mode
+      rec.activeDot.style.display = (et===activeEt) ? "" : "none";
+    });
+    // open the tab for the current mode's type on first load (then leave the user's choice alone)
+    if(!tabInited){ tabInited=true; setTab(activeEt>=0?activeEt:0); }
+  }
   if(p.length>=60){ const s16=(o)=>{ let v=p[o]|(p[o+1]<<8); return v>32767?v-65536:v; };
     const ax=s16(54),ay=s16(56),az=s16(58);
     const amag=Math.round(Math.sqrt(ax*ax+ay*ay+az*az));
@@ -534,17 +600,13 @@ $("#factoryErase").onclick=async()=>{
   await send([0x0A,0x45,0x52,0x53]);
   log("FACTORY ERASE sent — copycat is reformatting and rebooting to defaults. Re-pair the controller, then reconnect.");
 };
-$("#abSwap").onclick=()=>{ const on=$("#abSwap").classList.contains("active"); setField(4, on?0:1); };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
 for(const id of ["mDiv","mFric","rumble"]){
   const field={mDiv:1,mFric:2,rumble:22}[id];
   $("#"+id).addEventListener("input", ()=>{ $("#"+id+"V").textContent=fmtSlider(id,$("#"+id).value); });
   $("#"+id).addEventListener("change", ()=>setField(field, +$("#"+id).value));
 }
-for(const sel of document.querySelectorAll("select.back")){
-  sel.addEventListener("change", ()=>setField(5 + +sel.dataset.i, +sel.value));
-}
-$("#qamMap").addEventListener("change", ()=>setField(21, +$("#qamMap").value));
+// per-type back/QAM/A-B-swap/haptics handlers are wired in buildTypeCfgs()
 $("#swRate").addEventListener("change", ()=>setField(23, +$("#swRate").value));
 $("#swGyro").addEventListener("change", ()=>setField(24, +$("#swGyro").value));
 for(const sel of document.querySelectorAll("select.chord")){

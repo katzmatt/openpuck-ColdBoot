@@ -18,12 +18,44 @@ bool g_debugCdcThisBoot = false;
 static uint8_t g_debugCdc = 0;
 
 int g_mDiv = 64, g_mFric = 94;
+
+// Per-type button config. back default {5,6,7,8} = L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 12..15 D-pad,
+// 16/17 PS touch/mute, 18 Switch Capture). Switch differs: QAM defaults to Capture(18), A/B swap on, and
+// trackpad haptics off. qamMap 0 = unmapped (hardcoded per-mode behavior).
+TypeCfg g_type[ET_COUNT] = {
+	/* ET_XBOX   */ { { 5, 6, 7, 8 }, 0, 0, 1 },
+	/* ET_SWITCH */ { { 5, 6, 7, 8 }, 18, 1, 0 },
+	/* ET_DS4    */ { { 5, 6, 7, 8 }, 0, 0, 1 },
+	/* ET_DS5    */ { { 5, 6, 7, 8 }, 0, 0, 1 },
+};
+uint8_t g_etype = ET_NONE;
+
+// Live mirrors of the active type (puck modes use the harmless defaults below).
 uint8_t g_abSwap = 0;
-uint8_t g_back[4] = {
-	5, 6, 7, 8
-}; // L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 12..15 D-pad U/D/L/R)
-// 0 = default (unmapped, uses hardcoded behavior per mode)
+uint8_t g_back[4] = { 5, 6, 7, 8 };
 uint8_t g_qamMap = 0;
+uint8_t g_padHaptics = 1;
+
+void applyActiveType()
+{
+	g_etype = etypeForMode(g_usbMode);
+	if (g_etype >= ET_COUNT) { // puck mode (Steam/Lizard): no remap, haptics on
+		g_back[0] = 5;
+		g_back[1] = 6;
+		g_back[2] = 7;
+		g_back[3] = 8;
+		g_qamMap = 0;
+		g_abSwap = 0;
+		g_padHaptics = 1;
+		return;
+	}
+	const TypeCfg &t = g_type[g_etype];
+	for (int i = 0; i < 4; i++)
+		g_back[i] = t.back[i];
+	g_qamMap = t.qamMap;
+	g_abSwap = t.abSwap;
+	g_padHaptics = t.padHaptics;
+}
 // rumble strength % (200 = double); adjustable from the WebUSB panel
 uint8_t g_rumbleScale = 200;
 
@@ -32,11 +64,12 @@ uint8_t g_rumbleScale = 200;
 const uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
-// bumped (rumbleScale): old cfg ignored -> clean defaults on first boot
-#define CFG_MAGIC 0xC9
+// bumped (per-type TypeCfg blob replaces scalar abSwap/back/qamMap): old cfg ignored -> clean defaults on first boot
+#define CFG_MAGIC 0xCA
 struct Cfg {
-	uint8_t magic, mode, mDiv, mFric, rsvd0, abSwap, back[4], pollU100,
-		persistMode, bootMode, chordBtn[3], qamMap, rumbleScale;
+	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode, bootMode,
+		chordBtn[3], rumbleScale;
+	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 void saveCfg()
@@ -46,14 +79,14 @@ void saveCfg()
 		  (uint8_t)g_mDiv,
 		  (uint8_t)g_mFric,
 		  g_debugCdc,
-		  g_abSwap,
-		  { g_back[0], g_back[1], g_back[2], g_back[3] },
 		  (uint8_t)(g_pollUs / 100),
 		  (uint8_t)(g_persistMode ? 1 : 0),
 		  g_bootMode,
 		  { g_chordBtn[0], g_chordBtn[1], g_chordBtn[2] },
-		  g_qamMap,
-		  g_rumbleScale };
+		  g_rumbleScale,
+		  {} };
+	for (int i = 0; i < ET_COUNT; i++)
+		c.type[i] = g_type[i];
 	InternalFS.remove(CFG_FILE);
 	File f(InternalFS);
 	if (f.open(CFG_FILE, FILE_O_WRITE)) {
@@ -72,9 +105,8 @@ void loadCfg()
 		    c.magic == CFG_MAGIC) {
 			g_mDiv = c.mDiv ? c.mDiv : 64;
 			g_mFric = c.mFric;
-			g_abSwap = c.abSwap;
-			for (int i = 0; i < 4; i++)
-				g_back[i] = c.back[i];
+			for (int i = 0; i < ET_COUNT; i++)
+				g_type[i] = c.type[i];
 			g_persistMode = c.persistMode ? true : false;
 			// one-shot debug-CDC (Cfg.rsvd0): honor for THIS boot, then consume so the next boot reverts to normal.
 			g_debugCdcThisBoot = c.rsvd0 ? true : false;
@@ -103,13 +135,14 @@ void loadCfg()
 				g_chordBtn[i] = modeValid(c.chordBtn[i]) ?
 							c.chordBtn[i] :
 							CHORD_DEF[i];
-			g_qamMap = c.qamMap;
 
 			// 0 is a valid setting (rumble off)
 			g_rumbleScale = c.rumbleScale;
 		}
 		f.close();
 	}
+	// resolve the active emulated type's settings into the live mirrors the mode builders read
+	applyActiveType();
 	// clear the one-shot so the NEXT cold boot reverts to the default/persist policy
 	if (consume) {
 		g_bootMode = 0xFF;

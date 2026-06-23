@@ -32,6 +32,10 @@
 #define TB_RPADC 0x400000u
 #define TB_LPADT 0x2000000u
 #define TB_LPADC 0x4000000u
+// Trigger full-pull / click bits (the controller sets these at a full ZL/ZR pull; also the target of a back-
+// paddle / QAM remap to LT/RT). psShouldersByte / the Switch builders already read these as L2/R2 / ZL/ZR.
+#define TB_R2 0x800000u
+#define TB_L2 0x8000000u
 
 // Virtual PS targets, settable ONLY via a back-paddle/QAM remap (psOrBackCode / tritonFromCode), never by the
 // controller itself. They live on bits 30/31 -- the only bits the SC2 0x45 report does NOT use (see PROTOCOL.md

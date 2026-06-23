@@ -78,6 +78,10 @@ static inline uint32_t tritonFromCode(uint8_t c)
 		return TB_TOUCH;
 	case 17:
 		return TB_MUTE;
+	case 19:
+		return TB_L2; // left trigger (LT / L2 / ZL)
+	case 20:
+		return TB_R2; // right trigger (RT / R2 / ZR)
 	default:
 		return 0;
 	}

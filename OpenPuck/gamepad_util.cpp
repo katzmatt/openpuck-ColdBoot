@@ -158,6 +158,12 @@ static void psOrBackCode(uint32_t *b, uint8_t c)
 	case 17:
 		*b |= TB_MUTE;
 		break;
+	case 19:
+		*b |= TB_L2; // left trigger (L2)
+		break;
+	case 20:
+		*b |= TB_R2; // right trigger (R2)
+		break;
 	default:
 		break;
 	}
