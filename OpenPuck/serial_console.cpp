@@ -223,7 +223,8 @@ void serialConsolePoll()
 					saveCfg();
 					Serial.printf(
 						"# A/B + X/Y swap %s (Nintendo layout) [type %u]\n",
-						g_abSwap ? "ON" : "off", g_etype);
+						g_abSwap ? "ON" : "off",
+						g_etype);
 				} else
 					Serial.println(
 						"# A/B swap N/A in this mode (Steam/Lizard are not emulated types)");

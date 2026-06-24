@@ -205,7 +205,8 @@ static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 		return;
 	g_jcLastLo[slot] = lo;
 	g_jcLastHi[slot] = hi;
-	hapticSteamRumble(lo, hi, jcBondOf(slot)); // route to the mapped controller
+	hapticSteamRumble(lo, hi,
+			  jcBondOf(slot)); // route to the mapped controller
 }
 static int jcStick12(int16_t v, bool inv)
 { // steam int16 (center 0) -> 12-bit (center 0x800), clamped
@@ -224,7 +225,8 @@ static void jcPackStick(uint8_t s[3], int16_t x, int16_t y)
 // shared by the streamed 0x30 report and the 0x21 subcommand-reply reports the host reads during init.
 static void jcInputPrefix(uint8_t slot, uint8_t *out)
 {
-	uint8_t bond = jcBondOf(slot); // input data comes from the mapped controller; timer/state stay per USB slot
+	uint8_t bond = jcBondOf(
+		slot); // input data comes from the mapped controller; timer/state stay per USB slot
 	uint32_t b = g_in[bond].buttons;
 	// QAM (3 dots) remap -> applied via codeToJc below like a back paddle (so Capture(18)/any target work).
 	bool qam = g_qamMap && (b & TB_QAM);
@@ -298,7 +300,8 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 }
 static void switchProBuild(uint8_t slot, uint8_t out[63])
 {
-	uint8_t bond = jcBondOf(slot); // IMU data comes from the mapped controller
+	uint8_t bond =
+		jcBondOf(slot); // IMU data comes from the mapped controller
 	memset(out, 0, 63);
 	jcInputPrefix(slot, out);
 	// Gyro slot order follows hid-nintendo: raw+6 = ROLL, raw+8 = PITCH, raw+10 = YAW. Source routing (a proper

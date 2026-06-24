@@ -51,7 +51,8 @@ extern unsigned long g_connCooldown;
 // connected-mode state (reset by the 'k' console toggle)
 extern uint8_t g_connSt, g_connStep;
 extern uint16_t g_connPoll;
-extern uint32_t g_connF1; // count of 0xF1 input reports seen (aggregate across all slots)
+extern uint32_t
+	g_connF1; // count of 0xF1 input reports seen (aggregate across all slots)
 
 // last protocol version the controller reported in an F3 reply (0xFF=none) -- aggregate (last writer wins)
 extern uint8_t g_connF3v;

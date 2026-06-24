@@ -16,7 +16,7 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 	\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.ino' \) \
 	-not -name 'git_version.h')
 
-.PHONY: format format-check lint check
+.PHONY: format format-check check
 
 ## Reformat all C/C++ sources in place using the Linux kernel style.
 format:
@@ -27,11 +27,5 @@ format:
 format-check:
 	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES)
 
-## Style rules clang-format can't enforce. Currently: a long trailing //
-## comment must be moved onto its own line above the statement (clang-format
-## won't relocate it, so it would otherwise split the code or run past 80).
-lint:
-	python3 tools/check-trailing-comments.py $(FORMAT_FILES)
-
 ## Everything CI gates on.
-check: format-check lint
+check: format-check

@@ -516,8 +516,10 @@ static void wakeNudgeTask()
 		if (millis() - stepMs < 15)
 			return; // pace the edges
 		stepMs = millis();
-		wakeHidMove((step == 1) ? NUDGE_JIGGLE_PX : -NUDGE_JIGGLE_PX, 0);
-		if (step >= 2) { // jiggle (right, then back) delivered -> disarm every slot
+		wakeHidMove((step == 1) ? NUDGE_JIGGLE_PX : -NUDGE_JIGGLE_PX,
+			    0);
+		if (step >=
+		    2) { // jiggle (right, then back) delivered -> disarm every slot
 			step = 1;
 			for (int s = 0; s < NSLOT; s++)
 				g_nudgeStep[s] = 0;
@@ -537,11 +539,13 @@ static void wakeNudgeTask()
 		stepMs[s] = millis();
 		hid_mouse_report_t m;
 		m.buttons = 0;
-		m.x = (g_nudgeStep[s] == 1) ? NUDGE_JIGGLE_PX : -NUDGE_JIGGLE_PX;
+		m.x = (g_nudgeStep[s] == 1) ? NUDGE_JIGGLE_PX :
+					      -NUDGE_JIGGLE_PX;
 		m.y = 0;
 		m.wheel = 0;
 		m.pan = 0;
-		hid[s].sendReport(0x40, &m, sizeof m); // jiggle right, then back
+		hid[s].sendReport(0x40, &m,
+				  sizeof m); // jiggle right, then back
 		g_nudgeStep[s] = (g_nudgeStep[s] >= 2) ?
 					 0 :
 					 (uint8_t)(g_nudgeStep[s] + 1);
