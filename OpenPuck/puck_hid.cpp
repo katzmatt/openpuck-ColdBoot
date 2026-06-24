@@ -6,6 +6,7 @@
 #include "rf_link.h"
 #include "triton.h"
 #include "mode_lizard.h"
+#include "wake_hid.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -183,6 +184,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	const uint8_t *pl = b + 2;
 	uint16_t pln = (n >= 2) ? n - 2 : 0;
 
+	// Capture EVERY feature SET (the whole cmd channel: 0x83 attr, 0xAE strings, 0xB4 conn, 0xA2/A3 bond, the
+	// feature-1 relay, AND any host battery query) to the WebUSB ring so the panel's capture view shows it.
+	hapLogAdd((uint8_t)slot, cmd, b, n);
+
 	// settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
 	if (cmd >= 0x80 && cmd <= 0x89)
 		hostStampAlive();
@@ -194,9 +199,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 
 	// report 0x01 = raw passthrough -> queue for RF relay to the controller
 	if (rid == 1 && n >= 2) {
-		// capture EVERY relayed feature-1 command for the WebUSB capture view (haptics, LED SET_LED_COLOR,
-		// 0x87 settings, 0x9F power-off). Log shows cmd as "rid"; bytes start [cmd][len]...
-		hapLogAdd((uint8_t)slot, cmd, b, n);
+		// (feature-1 commands -- haptics, LED, 0x87 settings, 0x9F power-off -- are captured by the
+		// general feature-SET hapLogAdd above.)
 		bool haptic82 = (cmd == 0x82 && len <= pln);
 
 		bool muted = g_resumeMs &&
@@ -320,6 +324,29 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	if (n > reqlen)
 		n = reqlen;
 	memcpy(buf, S.resp, n);
+	// Battery diagnostic: in gamepad (Steam) mode battery is read host-side via the feature channel, NOT the
+	// forwarded 0x43 (that path is verbatim-identical to lizard mode, where battery works). Capture what Steam
+	// GETs so a WebUSB-panel (or CDC) capture in Steam mode shows the report id it polls for battery (then we
+	// answer it with g_battery in handleSet). De-duped by report id so the high-rate polling doesn't flood the
+	// ring/console -- a freshly-requested id is logged once, then again only after 1s.
+	{
+		static uint8_t lastRid = 0xFF;
+		static unsigned long lastMs = 0;
+		if (rid != lastRid || millis() - lastMs > 1000) {
+			lastRid = rid;
+			lastMs = millis();
+			// ring marker 0xFC = "host feature GET" (panel renders it as "GET rid=.."); payload = what we returned
+			hapLogAdd(0xFC, rid, S.resp, n);
+			if (Serial.availableForWrite() > 80)
+				Serial.printf(
+					"# GET if%d rid=%02X reqlen=%u -> %02X %02X %02X (batt=%u%%)\n",
+					slot, rid, reqlen, S.resp[0], S.resp[1],
+					S.resp[2],
+					(slot >= 0 && slot < NSLOT) ?
+						g_battery[slot] :
+						0);
+		}
+	}
 	return n;
 }
 
@@ -435,8 +462,12 @@ void SteamPuckController::onAuxReport(int slot, uint8_t rid,
 	// Forward the controller's status report VERBATIM (the real puck does this; it's how the host reads
 	// battery). Padding the report to the descriptor-declared length broke battery in both lizard and
 	// Steam, so it's reverted -- send exactly what the controller sent.
-	if (g_slot[slot].used && hid[slot].ready())
+	if (g_slot[slot].used && hid[slot].ready()) {
+		// capture the pushed status report (0x43 battery / 0x44) device->host for the WebUSB panel: this is
+		// the channel Steam actually reads battery from; marker 0xFB = "->host push".
+		hapLogAdd(0xFB, rid, data, n);
 		hid[slot].sendReport(rid, data, n);
+	}
 }
 
 // wake nudge: a bare USB resume signal is NOT enough to wake some hosts (Windows in particular) -- they only
@@ -462,14 +493,43 @@ static void wakeNudgeTask()
 {
 	if (USBDevice.suspended())
 		return; // wait for resume; reports can't cross a suspended bus
-	static unsigned long stepMs[NSLOT] = { 0 };
+	// Expire stale arms (bus never resumed) and see if any slot still wants a wake nudge.
+	bool armed = false;
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_nudgeStep[s])
 			continue;
 		if (millis() - g_nudgeMs[s] > 5000) {
 			g_nudgeStep[s] = 0;
 			continue;
-		} // bus never resumed -> drop the nudge
+		}
+		armed = true;
+	}
+	if (!armed)
+		return;
+	// Ride the BOOT MOUSE -- the interface Windows armed as the wake source; a gamepad-slot report does not
+	// wake Modern Standby. A single jiggle on it wakes the host regardless of how many slots are connected.
+	if (wakeHidPresent()) {
+		if (!wakeHidReady())
+			return;
+		static unsigned long stepMs = 0;
+		static uint8_t step = 1;
+		if (millis() - stepMs < 15)
+			return; // pace the edges
+		stepMs = millis();
+		wakeHidMove((step == 1) ? NUDGE_JIGGLE_PX : -NUDGE_JIGGLE_PX, 0);
+		if (step >= 2) { // jiggle (right, then back) delivered -> disarm every slot
+			step = 1;
+			for (int s = 0; s < NSLOT; s++)
+				g_nudgeStep[s] = 0;
+		} else
+			step++;
+		return;
+	}
+	// Fallback (debug-CDC boot: no wake mouse): per-slot jiggle on the gamepad slot HIDs.
+	static unsigned long stepMs[NSLOT] = { 0 };
+	for (int s = 0; s < NSLOT; s++) {
+		if (!g_nudgeStep[s])
+			continue;
 		if (!hid[s].ready())
 			continue;
 		if (millis() - stepMs[s] < 15)
@@ -477,13 +537,11 @@ static void wakeNudgeTask()
 		stepMs[s] = millis();
 		hid_mouse_report_t m;
 		m.buttons = 0;
-		m.x = (g_nudgeStep[s] == 1) ? NUDGE_JIGGLE_PX :
-					      -NUDGE_JIGGLE_PX;
+		m.x = (g_nudgeStep[s] == 1) ? NUDGE_JIGGLE_PX : -NUDGE_JIGGLE_PX;
 		m.y = 0;
 		m.wheel = 0;
 		m.pan = 0;
-		hid[s].sendReport(0x40, &m,
-				  sizeof m); // jiggle right, then back
+		hid[s].sendReport(0x40, &m, sizeof m); // jiggle right, then back
 		g_nudgeStep[s] = (g_nudgeStep[s] >= 2) ?
 					 0 :
 					 (uint8_t)(g_nudgeStep[s] + 1);
@@ -532,6 +590,7 @@ void SteamPuckController::task()
 			if (conn && !usbConn[s])
 				connEdgeMs[s] = millis();
 			uint8_t st = conn ? 0x02 : 0x01;
+			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)
 			hid[s].sendReport(0x79, &st, 1);
 			usbConn[s] = conn;
 			last79[s] = millis();
@@ -555,6 +614,7 @@ void SteamPuckController::task()
 					mag = 95;
 				s7b[8] = (uint8_t)(0u - (uint8_t)mag);
 			}
+			hapLogAdd(0xFB, 0x7B, s7b, 12); // ->host push (capture)
 			hid[s].sendReport(0x7B, s7b, 12);
 			last7B[s] = millis();
 		}
@@ -572,6 +632,7 @@ void SteamPuckController::task()
 			uint8_t b43[14] = { 0 };
 			b43[0] = st; // ucChargeState
 			b43[1] = g_battery[s]; // ucBatteryLevel (percent)
+			hapLogAdd(0xFB, 0x43, b43, 14); // ->host push (capture)
 			hid[s].sendReport(0x43, b43, sizeof b43);
 			last43[s] = millis();
 		}

@@ -509,6 +509,8 @@ function fmtCapEntry(e,maxMs){
   const hex=e.bytes.map(x=>x.toString(16).padStart(2,"0")).join(" ");
   const t = `-${String(maxMs-e.ms).padStart(6," ")}ms  `;
   if(e.slot===0xFD){ const k=e.bytes[0]; return `${t}════════ ${k===2?"RECONNECT (block+reinit armed)":k===1?"RF LINK UP":"RF LINK DOWN"} ════════`; }
+  if(e.slot===0xFC){ return `${t}GET←host rid=${e.rid.toString(16).padStart(2,"0")}  n=${e.nb}:  ${hex}`; } // host feature GET (battery poll lives here)
+  if(e.slot===0xFB){ return `${t}→host    rid=${e.rid.toString(16).padStart(2,"0")}  n=${e.nb}:  ${hex}`; } // pushed device→host status (0x43 battery / 0x7B / 0x79)
   const who = (e.slot===0xFE) ? "TX→ctlr " : `if${e.slot}     `;
   return `${t}${who} cmd=${e.rid.toString(16).padStart(2,"0")}  n=${e.nb}:  ${hex}`;
 }

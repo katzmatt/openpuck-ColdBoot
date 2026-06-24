@@ -1,11 +1,13 @@
 #include "wake_hid.h"
 #include <Adafruit_TinyUSB.h>
 
-// Boot MOUSE descriptor -- proven to enumerate and wake Windows. We never send a report on it; it exists so the
-// host enumerates a "HID-compliant mouse" child and grants the device wake-from-sleep privileges. (A boot
+// Boot MOUSE descriptor -- proven to enumerate and wake Windows. The host enumerates a "HID-compliant mouse"
+// child and arms IT as the wake source, so the wake nudge (wakeHidMove, driven from the puck wake path) must
+// ride THIS interface -- a report on the gamepad slot lands on an interface the host never allow-listed. (A boot
 // keyboard didn't enumerate on Windows and suppressed the wake the mouse class provides.)
 static const uint8_t WAKE_HID_DESC[] = { TUD_HID_REPORT_DESC_MOUSE() };
 static Adafruit_USBD_HID g_wakeHid;
+static bool g_wakeHidPresent = false;
 
 void wakeHidBegin()
 {
@@ -15,6 +17,25 @@ void wakeHidBegin()
 	g_wakeHid.setReportDescriptor(WAKE_HID_DESC, sizeof WAKE_HID_DESC);
 	g_wakeHid.setPollInterval(10);
 	g_wakeHid.begin();
+	g_wakeHidPresent = true;
+}
+
+bool wakeHidPresent()
+{
+	return g_wakeHidPresent;
+}
+
+bool wakeHidReady()
+{
+	return g_wakeHidPresent && g_wakeHid.ready();
+}
+
+bool wakeHidMove(int8_t dx, int8_t dy)
+{
+	if (!wakeHidReady())
+		return false;
+	// boot mouse descriptor has no report ID -> report_id 0; buttons=0 so we move but never click
+	return g_wakeHid.mouseReport(0, 0, dx, dy, 0, 0);
 }
 
 void wakeHidAddInterface()
