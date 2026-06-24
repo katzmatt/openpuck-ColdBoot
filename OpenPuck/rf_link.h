@@ -34,9 +34,12 @@ extern uint8_t g_getParam; // GET report 0x45 param byte
 extern uint8_t g_e3mode;
 
 // Real-puck alignment toggles (default to the captured real-puck behavior; flip on the CDC console to A/B):
-extern bool g_pollGet; // 'd': false=bare E3 poll (real puck), true=append GET-report-0x45 TLV (legacy)
-extern bool g_e7announce; // 'n': false=no E7 awake-announce (real puck), true=announce host-awake (legacy)
-extern bool g_e1keepalive; // 'm': session-channel E1 host-frame keepalive (ON by default; needed for shared addr)
+extern bool
+	g_pollGet; // 'd': false=bare E3 poll (real puck), true=append GET-report-0x45 TLV (legacy)
+extern bool
+	g_e7announce; // 'n': false=no E7 awake-announce (real puck), true=announce host-awake (legacy)
+extern bool
+	g_e1keepalive; // 'm': session-channel E1 host-frame keepalive (ON by default; needed for shared addr)
 
 // full multi-line debug dump vs compact "I45 <hex>" stream
 extern bool g_connVerbose;

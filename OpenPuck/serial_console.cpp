@@ -177,7 +177,8 @@ void serialConsolePoll()
 				Serial.printf(
 					"# CONN mode %s: %s%s poll on ch%u (param=%02X). F1 seen=%lu\n",
 					g_connOn ? "ON" : "off",
-					g_e7announce ? "E7-awake[00 00] -> " : "",
+					g_e7announce ? "E7-awake[00 00] -> " :
+						       "",
 					g_pollGet ? "E3+GET-report-0x45" :
 						    "bare E3",
 					g_rfCh, g_getParam,
@@ -382,8 +383,9 @@ void serialConsolePoll()
 				g_pollGet = !g_pollGet;
 				Serial.printf(
 					"# poll = %s (real puck sends BARE E3) - watch F1=/s new=/s\n",
-					g_pollGet ? "E3 + GET-report-0x45 TLV (legacy)" :
-						    "bare E3");
+					g_pollGet ?
+						"E3 + GET-report-0x45 TLV (legacy)" :
+						"bare E3");
 			} else if (line[0] == 'n') {
 				g_e7announce = !g_e7announce;
 				Serial.printf(

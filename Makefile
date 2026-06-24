@@ -12,7 +12,7 @@ CLANG_FORMAT ?= $(shell command -v clang-format-18 \
 
 # All hand-written C/C++ sources. Generated headers (git_version.h) are
 # gitignored and excluded here so formatting never touches them.
-FORMAT_FILES := $(shell find OpenPuck puck_sniffer pairtui \
+FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 	\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.ino' \) \
 	-not -name 'git_version.h')
 
