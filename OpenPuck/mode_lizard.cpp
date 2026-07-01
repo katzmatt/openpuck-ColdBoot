@@ -2,34 +2,52 @@
 #include "triton.h"
 #include "config.h"
 #include "usb_tx.h"
+#include "bonds.h" // NSLOT
 
-void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
+// Per-controller lizard state. rfLizard runs once per input report on the report's bond slot, so the glide
+// velocity / sub-pixel carry / button + keyboard edge trackers must be PER SLOT -- shared statics would let
+// one controller's motion clobber another's (garbage deltas). Zero-init (static storage) matches the old
+// per-function initial values (all 0 / false).
+struct LizardState {
+	int prx, pry; // last right-pad sample (mouse)
+	bool prt; // right pad was touched last frame
+	float vx, vy, rmx, rmy; // mouse velocity + sub-pixel carry
+	int ply; // last left-pad Y (scroll)
+	bool plt; // left pad was touched last frame
+	float sacc; // scroll accumulator
+	uint8_t pmbtn; // last mouse-button mask
+	bool prevL5, prevR5; // MODE_LIZARD media-key edges (L5/R5)
+	uint8_t pmod, pkc[6]; // last keyboard modifier + keycodes (edge-send)
+};
+static LizardState g_lz[NSLOT];
+
+void rfLizard(int slot, const uint8_t *r, Adafruit_USBD_HID *mdev,
 	      Adafruit_USBD_HID *kdev, uint8_t mrid, uint8_t krid)
 {
+	if (slot < 0 || slot >= NSLOT)
+		return;
+	LizardState &ls = g_lz[slot];
 	uint32_t b = btnsOf(r);
 	bool qamHeld = (b & TB_QAM) != 0;
 	// --- right pad -> mouse motion with glide (mirrors mode_xinput's rfXboxMouse) ---
-	static int prx = 0, pry = 0;
-	static bool prt = false;
-	static float vx = 0, vy = 0, rmx = 0, rmy = 0;
 	bool rtouch = b & TB_RPADT;
 	int rx = s16off(r, 22), ry = s16off(r, 24);
 	if (rtouch) {
-		if (prt) {
-			vx += (rx - prx);
-			vy += (ry - pry);
+		if (ls.prt) {
+			ls.vx += (rx - ls.prx);
+			ls.vy += (ry - ls.pry);
 		}
-		prx = rx;
-		pry = ry;
+		ls.prx = rx;
+		ls.pry = ry;
 	}
-	prt = rtouch;
+	ls.prt = rtouch;
 
 	// Y inverted; *10 = desktop-cursor sensitivity (g_mDiv 64 -> eff 640). Lower g_mDiv via WebUI slider = faster.
-	float mxf = vx / (float)(g_mDiv * 10) + rmx,
-	      myf = -(vy / (float)(g_mDiv * 10)) + rmy;
+	float mxf = ls.vx / (float)(g_mDiv * 10) + ls.rmx,
+	      myf = -(ls.vy / (float)(g_mDiv * 10)) + ls.rmy;
 	int dx = (int)mxf, dy = (int)myf;
-	rmx = mxf - dx;
-	rmy = myf - dy; // sub-pixel carry
+	ls.rmx = mxf - dx;
+	ls.rmy = myf - dy; // sub-pixel carry
 	if (dx > 127)
 		dx = 127;
 	if (dx < -127)
@@ -39,28 +57,25 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 	if (dy < -127)
 		dy = -127;
 	float f = g_mFric / 100.0f;
-	vx *= f;
-	vy *= f;
-	if (vx > -1 && vx < 1)
-		vx = 0;
-	if (vy > -1 && vy < 1)
-		vy = 0; // friction = glide/decay
+	ls.vx *= f;
+	ls.vy *= f;
+	if (ls.vx > -1 && ls.vx < 1)
+		ls.vx = 0;
+	if (ls.vy > -1 && ls.vy < 1)
+		ls.vy = 0; // friction = glide/decay
 	// --- left pad -> vertical scroll wheel (no momentum; only while touching, coarse) ---
-	static int ply = 0;
-	static bool plt = false;
-	static float sacc = 0;
 	bool ltouch = b & TB_LPADT;
 	int ly = s16off(r, 18);
 	if (ltouch) {
-		if (plt) {
-			sacc += (ly - ply) / (float)(g_mDiv * 24);
+		if (ls.plt) {
+			ls.sacc += (ly - ls.ply) / (float)(g_mDiv * 24);
 		}
-		ply = ly;
+		ls.ply = ly;
 	} else
-		sacc = 0;
-	plt = ltouch;
-	int dw = (int)sacc;
-	sacc -= dw;
+		ls.sacc = 0;
+	ls.plt = ltouch;
+	int dw = (int)ls.sacc;
+	ls.sacc -= dw;
 	if (dw > 15)
 		dw = 15;
 	if (dw < -15)
@@ -75,9 +90,8 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 		mbtn |= 2; // left trigger  -> right click
 	if (b & TB_LPADC)
 		mbtn |= 4;
-	static uint8_t pmbtn = 0;
-	if (dx || dy || dw || mbtn != pmbtn) {
-		pmbtn = mbtn;
+	if (dx || dy || dw || mbtn != ls.pmbtn) {
+		ls.pmbtn = mbtn;
 		hid_mouse_report_t m;
 		m.buttons = mbtn;
 		m.x = (int8_t)dx;
@@ -115,26 +129,25 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 	LZK((b & TB_DRT) || sx > 12000, HID_KEY_ARROW_RIGHT);
 #undef LZK
 	if (g_usbMode == MODE_LIZARD) {
-		static bool prevL5 = false, prevR5 = false;
 		bool mh = (b & TB_STEAM) || qamHeld;
 		bool nL5 = mh && (b & TB_L5), nR5 = mh && (b & TB_R5);
-		if (nL5 && !prevL5) {
+		if (nL5 && !ls.prevL5) {
 			uint8_t cc = 0x02;
 			if (mdev->ready())
 				usbTxHid(mdev, 0x03, &cc, 1);
 		}
-		if (nR5 && !prevR5) {
+		if (nR5 && !ls.prevR5) {
 			uint8_t cc = 0x01;
 			if (mdev->ready())
 				usbTxHid(mdev, 0x03, &cc, 1);
 		}
-		if ((!nL5 && prevL5) || (!nR5 && prevR5)) {
+		if ((!nL5 && ls.prevL5) || (!nR5 && ls.prevR5)) {
 			uint8_t cc = 0x00;
 			if (mdev->ready())
 				usbTxHid(mdev, 0x03, &cc, 1);
 		}
-		prevL5 = nL5;
-		prevR5 = nR5;
+		ls.prevL5 = nL5;
+		ls.prevR5 = nR5;
 		if (mh && (b & TB_X)) {
 			mod = KEYBOARD_MODIFIER_LEFTGUI |
 			      KEYBOARD_MODIFIER_LEFTCTRL;
@@ -158,15 +171,14 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 			nk = 1;
 		}
 	}
-	static uint8_t pmod = 0, pkc[6] = { 0, 0, 0, 0, 0, 0 };
-	bool chg = (mod != pmod);
+	bool chg = (mod != ls.pmod);
 	for (int i = 0; i < 6; i++)
-		if (kc[i] != pkc[i])
+		if (kc[i] != ls.pkc[i])
 			chg = true;
 	if (chg) {
-		pmod = mod;
+		ls.pmod = mod;
 		for (int i = 0; i < 6; i++)
-			pkc[i] = kc[i];
+			ls.pkc[i] = kc[i];
 		uint8_t krep[8] = { mod,   0,	  kc[0], kc[1],
 				    kc[2], kc[3], kc[4], kc[5] };
 		if (kdev->ready())

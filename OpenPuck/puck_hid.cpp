@@ -428,9 +428,9 @@ void SteamPuckController::begin()
 
 // Forward the controller's report 0x45 to Steam, or drive lizard kb/mouse when Steam is closed. PURELY a
 // USB-side decision -- changes nothing about the RF poll or the host->controller relay. Per-slot: each
-// controller's 0x45 goes to its OWN hid[slot], so Steam sees four independent inputs. Lizard remains
-// single-controller (slot 0); the other slots stay quiet in lizard mode -- one mouse + one keyboard is
-// the only thing a desktop can consume, and the comment in mode_lizard.h documents this.
+// controller's 0x45 goes to its OWN hid[slot], so Steam sees four independent inputs. Lizard is likewise
+// per-slot now: each connected controller drives keyboard+mouse on its own hid[slot] (the OS merges the
+// several HID mice/keyboards onto the one desktop), so any controller -- on any bond slot -- works.
 void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				     uint8_t bodyTlen)
 {
@@ -450,10 +450,11 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 	if (!g_slot[slot].used)
 		return;
 	if (lizardActive()) {
-		// Lizard single-controller: only slot 0's interface drives the mouse/keyboard. Other slots
-		// stay quiet in lizard mode.
-		if (slot == 0)
-			rfLizard(rep, &hid[0], &hid[0], 0x40, 0x41);
+		// Every connected controller drives keyboard+mouse on ITS OWN slot interface; the OS merges the
+		// multiple HID mice/keyboards onto the one desktop. (Was hardcoded to slot 0, which went silent
+		// whenever the live controller bonded to a non-zero slot -- e.g. slot 0 holding a stale/phantom
+		// bond from a cloned backup.) rfLizard keeps its glide/edge state per-slot so they don't clobber.
+		rfLizard(slot, rep, &hid[slot], &hid[slot], 0x40, 0x41);
 	} else {
 		uint8_t blen = bodyTlen - 1;
 		if (blen > 45)
