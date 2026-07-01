@@ -12,4 +12,5 @@
 
 extern Adafruit_USBD_WebUSB usb_web;
 
+void webusbInit(); // register the SOF-driven blob sender; call once from setup() after usbTxBegin()
 void webusbPoll(); // drain host commands + reply; call every loop()

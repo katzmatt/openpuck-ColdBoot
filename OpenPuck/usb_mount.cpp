@@ -15,6 +15,12 @@ static uint8_t g_maxSlots = NSLOT;
 // The connected set must hold steady this long before we re-enumerate -- absorbs RF blips and the staggered
 // way multiple controllers connect at boot (one re-enumeration once the set settles, not one per controller).
 #define MOUNT_DEBOUNCE_MS 2000u
+// Lazy removal: a disconnected slot's interface is only dropped (and the device re-enumerated down) once NO
+// controller has sent input for this long -- i.e. during genuine downtime. Re-enumeration tears down/rebuilds
+// USB from the loop task and is risky to do mid-use, so we never shrink while anything is being played; we
+// just let dead slots linger as idle interfaces and clean them up when the rig goes quiet. Additions are NOT
+// gated by this -- a newly-connected controller grows the set right away.
+#define IDLE_CLEANUP_MS 60000u
 
 static uint8_t connectedMask()
 {
@@ -108,14 +114,32 @@ void usbMountTask()
 	static uint8_t lastMask = 0xFF; // force first compare
 	static unsigned long stableSince = 0;
 	unsigned long now = millis();
-	uint8_t want = connectedMask();
+	// ADD IMMEDIATELY, REMOVE LAZILY. Re-enumeration (usbReenumerate) tears down + rebuilds the whole USB
+	// config from the loop task; doing that while the high-priority usbd task is mid-tud_task races its
+	// internal state -> HardFault/reboot. So we only ever SHRINK the interface set during genuine downtime:
+	//   - active (some controller sent input within IDLE_CLEANUP_MS): target = connected UNION already-mounted
+	//     -> the set only grows. A controller that drops (e.g. an errant ReversePuck disconnect) keeps its
+	//     now-idle interface and reconnecting reuses it with NO re-enumeration. task() gates input per slot,
+	//     so an idle interface just streams nothing.
+	//   - idle (no controller input for a full minute): target = exactly the connected set -> any lingering
+	//     dead slot is dropped and we re-enumerate down, safely, because nobody is playing.
+	// New controllers grow the set right away (after the usual debounce) regardless of idle state.
+	unsigned long lastAny = 0;
+	for (int s = 0; s < NSLOT; s++)
+		if (g_slot[s].used && g_connReplyMs[s] > lastAny)
+			lastAny = g_connReplyMs[s];
+	bool idle = (lastAny == 0) || (now - lastAny) >= IDLE_CLEANUP_MS;
+	uint8_t want = idle ? connectedMask() :
+			      (uint8_t)(connectedMask() | mountedMask());
 	if (want != lastMask) { // set is moving -> restart the stability timer
 		lastMask = want;
 		stableSince = now;
 		return;
 	}
 	// `want` has been steady since stableSince. Re-enumerate once it has held long enough AND the resulting
-	// (order-preserving, capped) mount SET differs from what is currently mounted.
+	// (order-preserving, capped) mount SET differs from what is currently mounted. With the union above,
+	// while active that can only happen when a NEW controller needs an interface (grow); a shrink only ever
+	// comes from the idle branch dropping a long-dead slot.
 	if ((now - stableSince) < MOUNT_DEBOUNCE_MS)
 		return;
 	int8_t tmp[NSLOT];

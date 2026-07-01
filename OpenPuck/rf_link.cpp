@@ -6,6 +6,7 @@
 #include "haptics.h"
 #include "controllers.h"
 #include "status_led.h"
+#include "fault_diag.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -40,8 +41,13 @@ bool g_e7announce =
 bool g_e1keepalive = true;
 
 bool g_connVerbose = false;
-// poll RX-window (us); shorter=more polls/s but may miss DELAYED replies. Tunable 'r'.
-uint32_t g_rxWin = 1200;
+// poll RX-window (us): the poll BUSY-WAITS up to this long for the controller's reply, so it is the dominant
+// per-poll loop cost and directly sets the poll rate -- one slot needs (g_rxWin + overhead) < g_pollUs(4000)
+// to sustain 250 Hz. 1200 is the proven 250 Hz value; it was briefly raised to 2000 (issue-72, delayed-reply
+// tolerance) which dropped the rate to ~220. FIXED + not configurable (like g_pollUs): there is no good
+// reason to raise it in the field, and doing so silently halves the poll rate. Any persisted/old value is
+// ignored.
+const uint32_t g_rxWin = 1200;
 unsigned long g_connCooldown = 0;
 
 uint8_t g_connSt = 0; // 0=announce awake, 1=poll loop
@@ -61,6 +67,15 @@ uint16_t g_f1ps = 0;
 uint16_t g_newps = 0;
 // polls/s (GET+relay TXs) last second -- distinguishes loop-starvation from reply-loss
 uint16_t g_pollsps = 0;
+// last second's CRC-fail and no-reply-in-window counts (wedge diagnosis)
+uint16_t g_crcps = 0, g_norxps = 0;
+uint16_t g_rfStallRecover = 0;
+
+// RF-stall self-heal thresholds. A genuine worst-case reply gap during normal play is ~1.5s (the
+// hapticOnReconnect re-init window); past RF_STALL_MS with us still actively polling, the whole link is wedged,
+// not merely blipping. RF_RECOVER_MS rate-limits the recovery so it can't thrash while a stalled link re-syncs.
+#define RF_STALL_MS 2500u
+#define RF_RECOVER_MS 2000u
 // measured avg us between GET-poll fires (vs intended g_pollUs)
 uint16_t g_pollPeriodUs = 0;
 static uint32_t g_pollDtSum = 0;
@@ -86,6 +101,11 @@ int g_curSlot = -1;
 static uint8_t g_pollPid[NSLOT] = {};
 static uint8_t g_relayPid[NSLOT] = {};
 static uint32_t g_stPoll = 0, g_stF1 = 0, g_stF3 = 0;
+// g_stPoll counts true poll CYCLES (one E3 GET per warm slot per cycle). g_stRelay counts relay frames TX'd
+// (host/haptic output reports). They were conflated before (every rfConnTx bumped one counter), which made
+// "Polls/s" read ~540 (250 polls + ~290 relays) and hid that each relay steals a reply window from its poll.
+static uint32_t g_stRelay = 0;
+uint16_t g_relayps = 0;
 static unsigned long g_stMs = 0;
 // Per-slot dedupe seq + per-slot new-report counter (the real puck sends 0x45 per controller; merging all
 // slots into a single sequence makes one controller "swallow" the other's frame).
@@ -243,7 +263,6 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 			    RADIO_SHORTS_DISABLED_RSSISTOP_Msk;
 	NRF_RADIO->EVENTS_END = 0;
 	NRF_RADIO->TASKS_RXEN = 1;
-	g_stPoll++;
 	uint32_t t0 = micros();
 	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < win) {
 	} // RX window (tunable 'r'; or relay override)
@@ -325,6 +344,13 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 				}
 			}
 			bool isF1 = (rtype == 0xF1);
+			// Every rfConnTx caller (rfConnStep) sets g_curSlot to a valid 0..NSLOT-1 before a poll, so it
+			// IS in range here today. But this block does ~50 unguarded g_curSlot array writes (g_in[],
+			// g_lastSeq[], and several static per-slot arrays) -- if any future/edge caller ever left
+			// g_curSlot at -1, those become out-of-bounds writes that corrupt RAM (the stack-smash / LOCKUP
+			// class we're chasing). Guard once at the top so the decode is robust by construction.
+			if (isF1 && (g_curSlot < 0 || g_curSlot >= NSLOT))
+				isF1 = false;
 			if (isF1) {
 				g_connF1++;
 				// walk ALL type6 TLVs (= HID report 0x45); taking only [0] halves the rate. idx is INT,
@@ -595,6 +621,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						    !USBDevice.suspended()) {
 							saveMode(want);
 							delay(40);
+							faultDiagArmIntentionalReset();
 							NVIC_SystemReset();
 						}
 					} else {
@@ -725,7 +752,8 @@ static void rfConnStep()
 		{
 			uint8_t rs1 =
 				(uint8_t)((((g_relayPid[k]++) & 3) << 1) | 1);
-			rfConnFlushRelay(ch, rs1);
+			if (rfConnFlushRelay(ch, rs1))
+				g_stRelay++;
 		}
 		// per-slot PID cycle so each bonded controller's polls stay distinct
 		uint8_t pidv = g_pollPid[k]++;
@@ -745,18 +773,27 @@ static void rfConnStep()
 		}
 		if (rx)
 			g_chF1[0]++;
+		g_stPoll++; // one true poll cycle for this slot
 		g_connPoll++;
 	};
 
-	// Poll every warm slot this cycle. "Cold" = was connected, now silent > SLOT_COLD_MS;
-	// those are retried only every SLOT_COLD_RETRY_MS. Never-replied slots count as warm so
-	// a controller that connects at any time gets the full poll rate to establish its link.
+	// Poll a slot every cycle (full rate) only when its controller is actually here. Throttle the rest to
+	// every SLOT_COLD_RETRY_MS:
+	//   - "cold": WAS connected but silent > SLOT_COLD_MS (controller powered off / out of range);
+	//   - "phantom": NEVER replied AND another controller is already connected. This is the cloned-puck case
+	//     (issue: bonds copied from a backup include controllers that aren't present). Polling a phantom slot
+	//     every cycle was doubling/tripling Polls/s, flooding noRx, and stealing reply windows from the live
+	//     controller. A never-replied slot with nothing else connected still polls full-rate, so the FIRST
+	//     controller connects instantly; a phantom only backs off once a real link exists to protect.
+	bool linkUp = anySlotLinkUp();
 	for (int k = 0; k < NSLOT; k++) {
 		if (!g_slot[k].used)
 			continue;
-		bool cold = g_connReplyMs[k] != 0 &&
-			    nowMs - g_connReplyMs[k] > SLOT_COLD_MS;
-		if (cold && nowMs - g_slotLastAttemptMs[k] < SLOT_COLD_RETRY_MS)
+		bool everReplied = g_connReplyMs[k] != 0;
+		bool cold = everReplied && (nowMs - g_connReplyMs[k] > SLOT_COLD_MS);
+		bool phantom = !everReplied && linkUp;
+		if ((cold || phantom) &&
+		    nowMs - g_slotLastAttemptMs[k] < SLOT_COLD_RETRY_MS)
 			continue;
 		doPoll(k);
 	}
@@ -797,6 +834,48 @@ void rfLinkTask()
 	if (g_connOn && millis() - g_connCooldown > 2500) {
 		rfConnStep();
 	} // connected-mode: poll controller, read input
+
+	// ---- RF stall self-heal -------------------------------------------------------------------------------
+	// Field wedge: the controllers stay powered and show a SOLID (connected) light, the puck keeps issuing E3
+	// polls + E1 beacons (radio TX is provably alive -- a power-cycled controller still re-adopts the session
+	// and goes solid against this puck), yet NOT ONE slot decodes a reply for seconds. The link reads down, no
+	// input reaches the host, and it never recovers on its own -- only a puck REPLUG fixes it. rfConfig() already
+	// re-disables (TASKS_DISABLE) the radio before every poll, so whatever this is survives a TASKS_DISABLE; the
+	// only thing that clears it is a full peripheral reset -- exactly what the replug does. So when the WHOLE
+	// link has been silent past RF_STALL_MS while we're still actively polling a slot that WAS connected, do the
+	// replug's job for the radio: power-cycle NRF_RADIO (POWER=0/1 clears every RADIO register; the next
+	// rfConnTx/rfHostFrameOnce re-applies all config via rfConfig()) and drop the connected-mode latches so
+	// polling/beaconing resume and the handshake re-runs from a clean slate. Gated on EVERY used+previously-
+	// connected slot being stalled, so one controller walking off (others still live) never trips it; the
+	// cooldown gate keeps it from firing while a controller is intentionally powering off; rate-limited so it
+	// cannot thrash. g_rfStallRecover is surfaced to the panel so the wedge -- and its recovery -- is observable.
+	if (g_connOn && g_curSlot >= 0 && millis() - g_connCooldown > 2500) {
+		static unsigned long lastRecoverMs = 0;
+		unsigned long nowMs2 = millis();
+		bool anyEverConnected = false, allStalled = true;
+		for (int s = 0; s < NSLOT; s++) {
+			if (!(g_slot[s].used && g_connReplyMs[s] != 0))
+				continue;
+			anyEverConnected = true;
+			if ((uint32_t)(nowMs2 - g_connReplyMs[s]) < RF_STALL_MS)
+				allStalled = false;
+		}
+		if (anyEverConnected && allStalled &&
+		    (uint32_t)(nowMs2 - lastRecoverMs) > RF_RECOVER_MS) {
+			lastRecoverMs = nowMs2;
+			g_rfStallRecover++;
+			NRF_RADIO->POWER = 0;
+			NRF_RADIO->POWER = 1;
+			g_connCooldown = 0;
+			g_connSt = 0;
+			g_connStep = 0;
+			if (Serial.availableForWrite() > 60)
+				Serial.printf(
+					"# RF STALL (#%u) -> radio power-cycle + reconnect\n",
+					g_rfStallRecover);
+		}
+	}
+
 	{
 		// remote wakeup on new RF controller connection (any slot)
 		static bool wasRfConn = false;
@@ -833,6 +912,9 @@ void rfLinkTask()
 		g_f1ps = g_stF1;
 		g_newps = g_stNew;
 		g_pollsps = (uint16_t)g_stPoll;
+		g_relayps = (uint16_t)g_stRelay;
+		g_crcps = (uint16_t)g_stCrc;
+		g_norxps = (uint16_t)g_stNoRx;
 		g_pollPeriodUs =
 			g_pollDtCnt ? (uint16_t)(g_pollDtSum / g_pollDtCnt) : 0;
 		g_pollDtSum = 0;
@@ -846,6 +928,7 @@ void rfLinkTask()
 				(unsigned long)g_stCrc, (unsigned long)g_stNoRx,
 				g_curSlot);
 		g_stPoll = 0;
+		g_stRelay = 0;
 		g_stF1 = 0;
 		g_stNew = 0;
 		g_stF3 = 0;

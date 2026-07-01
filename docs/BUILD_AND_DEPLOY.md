@@ -49,24 +49,48 @@ arduino-cli core install adafruit:nrf52 --additional-urls https://adafruit.githu
 From the repository root:
 
 ```bash
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" OpenPuck
+make build
 ```
 
-This sketch requires `CFG_TUD_HID=4` because Steam mode exposes four HID interfaces.
+That's the whole command — the USB flags the firmware needs are baked in, so you don't pass them yourself:
 
-**Build provenance.** `gen_version.sh` writes `OpenPuck/git_version.h` with the current commit's short hash and a dirty flag (1 if the working tree has any tracked change or untracked file). The firmware bakes these in and reports them over WebUSB, so the panel's **Build (git)** field shows exactly which commit is flashed and whether it was a clean checkout — handy for confirming what's on a board. The header is git-ignored; if you skip the script the build still succeeds and the panel shows `unknown`. You can also inject the values directly instead of using the script, e.g. append ``-DOPK_GIT_HASH=\"$(git rev-parse --short=8 HEAD)\" -DOPK_GIT_DIRTY=0`` to `build.extra_flags`.
+- `CFG_TUD_HID=4` — Steam mode exposes four HID interfaces (the Adafruit nRF core defaults to 2).
+- `CFG_TUD_TASK_QUEUE_SZ=64` — a deeper TinyUSB device event queue; the default of 16 can deadlock the firmware's loop under heavy USB traffic and trip the watchdog.
+- `CFG_TUD_VENDOR_TX_BUFSIZE=256` — the WebUSB status blob (~118 B) must fit the vendor TX FIFO in one write; the default 64 is too small and the panel (which drops frames rather than block the loop) would send nothing — a blank dashboard.
+
+**Overriding the defaults** (only if you need to) — pass them as `make` variables:
+
+```bash
+make build CFG_TUD_HID=6 CFG_TUD_TASK_QUEUE_SZ=128   # different interface count / queue depth
+make build EXTRA_FLAGS="-DOPK_LOG=1"                  # add your own defines
+make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 board
+```
+
+**Calling `arduino-cli` directly** instead of `make`? Then you must supply the flags yourself — the build
+`#error`s without them (so a forgotten flag fails loudly instead of shipping a broken/deadlock-prone image):
+
+```bash
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DCFG_TUD_TASK_QUEUE_SZ=64 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" OpenPuck
+```
 
 ## 5. Upload the firmware
 
-### macOS / Linux
-
-Find the board port:
+The quickest path is `make`. The serial port is a **required argument** (find it with `arduino-cli board list`):
 
 ```bash
-arduino-cli board list
+make flash /dev/cu.usbmodem1101    # upload the most recent build to that port
+make deploy /dev/cu.usbmodem1101   # build + flash in one step (same build overrides as `make build`)
 ```
 
-Upload:
+Use the port for your OS: macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`, Windows `COM5`.
+
+> **DFU note:** in puck (Steam/Lizard) mode the firmware drops the CDC serial port to free a USB endpoint, so `arduino-cli` can't auto-reset the board into its bootloader. If the upload can't connect, put the board in DFU mode first by **double-tapping RST**, then `make flash <bootloader-port>` (re-check `arduino-cli board list` — the port can change in DFU mode). The drag-and-drop UF2 path in §5b also works.
+
+### Manual upload (without `make`)
+
+Find the board port with `arduino-cli board list`, then:
+
+### macOS / Linux
 
 ```bash
 arduino-cli upload \
@@ -133,8 +157,10 @@ Re-flashing firmware does **not** erase the board's internal LittleFS. The paire
 
   ```bash
   ./gen_version.sh   # recommended: gives the build a distinct git hash (see below)
-  arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DOPK_FACTORY_RESET=1" OpenPuck
+  make build-recovery
   ```
+
+  (`make build-recovery` is just `make build` plus `-DOPK_FACTORY_RESET=1`; the usual USB flags are still baked in.)
 
   It is **not** a wipe-every-boot image: after the one-time reset it stamps a tag file with the build's git hash, so subsequent boots skip the wipe and persist normally. Flashing this same image again won't re-wipe (the tag matches); flashing a **different** build (different git hash) re-triggers the one-time reset. For an on-demand wipe at any time, use the WebUSB button or serial `ERASE-ALL` below. Re-pair the controller after a reset.
 - **WebUSB panel (any mode):** open the panel (§8), and in the maintenance card click **⚠ Factory erase**. Confirm the two warning dialogs and type `ERASE` when prompted. The board reformats its filesystem and reboots to factory defaults. This works in every USB mode.

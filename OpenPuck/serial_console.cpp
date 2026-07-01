@@ -5,6 +5,7 @@
 #include "haptics.h"
 #include "bonds.h"
 #include "config.h"
+#include "fault_diag.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <stdlib.h>
@@ -30,6 +31,7 @@ void serialConsolePoll()
 				Serial.println(
 					"# done -- rebooting into clean defaults; re-pair the controller");
 				delay(40);
+				faultDiagArmIntentionalReset();
 				NVIC_SystemReset();
 			} else if (line[0] == 'l')
 				rfListenStart();
@@ -104,6 +106,7 @@ void serialConsolePoll()
 						delay(20);
 						saveMode(m);
 						delay(40);
+						faultDiagArmIntentionalReset();
 						NVIC_SystemReset();
 					}
 				}
@@ -368,11 +371,9 @@ void serialConsolePoll()
 						g_slot[s].rec[7]);
 				}
 			} else if (line[0] == 'r') {
-				g_rxWin = strtoul(line + 1, 0, 10);
-				if (g_rxWin < 150)
-					g_rxWin = 150;
+				// poll RX-window is FIXED (not configurable) -- report only.
 				Serial.printf(
-					"# poll RX-window=%lu us (poll rate caps ~%lu/s)\n",
+					"# poll RX-window=%lu us (FIXED; poll rate caps ~%lu/s)\n",
 					(unsigned long)g_rxWin,
 					(unsigned long)(1000000 / g_rxWin));
 			} else if (line[0] == 'e') {

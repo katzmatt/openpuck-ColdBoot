@@ -370,8 +370,16 @@ Messages:
   - `0x01`: get status blob
   - `0x02 <field> <value>`: set one field
   - `0x03 <mode>`: switch mode and reboot
+  - `0x07`: re-init haptics (clear a stuck buzz)
+  - `0x08`: send controller power-off
+  - `0x09`: export all bond slots (reply: `0xA7` frame) — see §10.1
+  - `0x0A 0x45 0x52 0x53`: factory erase (`"ERS"` magic), then reboot
+  - `0x0B` / `0x0C`: reboot into serial DFU / UF2 bootloader
+  - `0x0D <slot> <used> <24-byte rec>`: write one bond slot into RAM — see §10.1
+  - `0x0E <mode>`: commit imported bonds (+ apply mode, `0xFF` = unchanged), then reboot
 - Device to host:
-  - `0xA5 <len> <payload>`
+  - `0xA5 <len> <payload>`: status blob
+  - `0xA7 <len> <payload>`: bond export (§10.1)
 
 Status blob payload:
 
@@ -400,6 +408,39 @@ Status blob payload:
 [21] QoS auto-hop flag
 [22] persist-mode flag
 ```
+
+### 10.1 Backup / clone (bond export & import)
+
+A puck's whole portable identity is its four 24-byte bond records (`[proteus_uuid 4][ibex_uuid 4][serial 16]`,
+§2). The per-bond on-air *session address* is **not** stored or transferred: each puck re-derives it from the
+bond UUID mixed with its own FICR `DEVICEID`, and the bonded controller relearns it from the `E1` host beacon on
+every reconnect. So copying the bond records onto a second puck is sufficient for any controller paired to the
+first to connect to the second **with no re-pairing** — the two pucks just derive different (non-colliding)
+session addresses for the same controller.
+
+This makes a puck cloneable. The WebUSB panel exposes it as **Export to file** / **Import from file**.
+
+**Export — `0x09` → `0xA7` frame:**
+
+```text
+[0]    format version (1)
+[1]    used mask (bit s = slot s bonded)
+[2..]  slot 0..3 records, 24 bytes each (96 bytes)        (len = 2 + 4*24 = 98)
+```
+
+**Import — `0x0D` (per slot) then `0x0E` (commit):**
+
+```text
+0x0D  <slot 0..3>  <used 0|1>  <24-byte record>      writes one slot into RAM (used=0 clears it)
+0x0E  <mode>                                         persist all slots, apply mode (0xFF=unchanged), reboot
+```
+
+Bonds are written one slot at a time so no command exceeds a single USB-FS packet, and each `0x0D`/`0x02` is
+acked with a status blob so the host's read-after-write keeps the OUT pipe flowing. The panel sends all four
+`0x0D` slot writes plus every config field via `0x02`, then a single `0x0E` to persist and reboot — so the
+reboot regenerates the session addresses from the new UUIDs and the restored puck reproduces both the pairings
+and all settings. Other settings (mouse, rumble, chords, per-type button maps, Switch Pro motion) ride in the
+backup file as plain `0x02` field values, not in the bond commands.
 
 ## 11. Timing notes
 
