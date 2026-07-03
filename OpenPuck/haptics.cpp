@@ -21,8 +21,9 @@ volatile uint8_t g_hapticStop = 0;
 // Off by default -- opt in from the WebUSB panel if a controller's haptics come up degraded after connect.
 uint8_t g_hapticBlockOn = 0;
 uint16_t g_hapticBlockMs = HAPTIC_BLOCK_MS_DEFAULT;
-// id9=0 hold in MODE_STEAM (see hapticTask): ON by default -- keeps the controller's autonomous haptic engine
-// off so it can't latch into the deep-inside buzz. Scoped to MODE_STEAM (pure MODE_LIZARD keeps its ticks).
+// id9 steering (see hapticTask): ON by default. Holds id9=0 while Steam is DRIVING (autonomous engine off,
+// Steam owns haptics, no reconnect buzz-latch) and lands id9=1 when lizard is PRESENTING (pure MODE_LIZARD
+// or Steam-closed fallback) so the autonomous pad layer -- the trackpad-tick source -- is on.
 // Persisted; console 'u' toggles for A/B.
 uint8_t g_lizKeep = 1;
 // EXPERIMENT (console "L87" toggles, persisted): land ALL relayed 0x87 SET_SETTINGS via type-01 framing so
@@ -602,28 +603,49 @@ void hapticOnReconnect(int slot)
 }
 void hapticTask()
 {
-	// id9=0 hold in MODE_STEAM: land SET_SETTINGS index 9 = 0 on each connected controller every LIZKEEP_MS,
-	// the way the real puck does (sniff1.json: id9=0 landed ~every few s). This holds the controller in
-	// gamepad mode with its AUTONOMOUS mapping/haptic engine OFF -- which is what stops the controller's own
-	// touchpad-haptic engine from latching into the "deep-inside" buzz seen after repeated reconnects (that
-	// buzz is controller-internal: capture-for-haptics.txt showed the controller in autonomous mode, rid=40/
-	// 41, with OpenPuck relaying no haptics at all -- so only holding id9=0 quiets it). Framing note: 0x87
-	// (SET_SETTINGS) is idempotent -- a repeated same-value id9=0 is change-guarded in the controller, so it
-	// does NOT re-fire the click-causing 0x81 side effects; holding via 0x87 is silent where a looped 0x81
-	// was not. It DOES disable the controller's autonomous touchpad ticks (id9 gates the whole pad layer),
-	// which is fine in Steam mode (Steam owns haptics) -- hence scoped to MODE_STEAM ONLY. Pure MODE_LIZARD
-	// deliberately leaves id9 alone so its autonomous ticks keep working (and it's the mode with no buzz).
-	if (g_lizKeep && g_usbMode == MODE_STEAM) {
+	// id9 steering (SET_SETTINGS index 9 = digital-mappings / the controller's AUTONOMOUS mapping+haptic
+	// engine). Two regimes, switched by who is actually driving:
+	//  - Steam DRIVING (MODE_STEAM + heartbeat alive): hold id9=0 every LIZKEEP_MS, the way the real puck
+	//    does (sniff1.json) -- keeps the autonomous engine off so Steam owns haptics and the engine can't
+	//    latch the "deep-inside" reconnect buzz. 0x87 is change-guarded in the controller, so the repeat
+	//    is silent (no 0x81-style click).
+	//  - lizard PRESENTING (pure MODE_LIZARD, or MODE_STEAM with Steam closed): land id9=1 ONCE per
+	//    connect/lizard episode. id9 gates the whole autonomous pad layer INCLUDING the trackpad ticks --
+	//    the old always-in-MODE_STEAM id9=0 hold is why Steam-closed lizard lost its ticks, and a stale
+	//    id9=0 from a previous Steam session (mode switch without a controller power cycle) is why pure
+	//    lizard could come up tickless too. Landing 1 explicitly restores the pad layer immediately
+	//    instead of waiting for the controller's revert timer (which also resets settings = audible pop).
+	// Emulated modes (Xbox/Switch/DS) are untouched: lizardActive() is false there and the id9=0 hold
+	// stays scoped to MODE_STEAM, exactly as before.
+	if (g_lizKeep && modeIsPuck(g_usbMode)) {
 		static unsigned long lastKeep[NSLOT] = { 0 };
-		static const uint8_t KA[3] = { 0x09, 0x00, 0x00 };
+		static bool landedAuto[NSLOT] = { false };
+		static const uint8_t K0[3] = { 0x09, 0x00, 0x00 };
+		static const uint8_t K1[3] = { 0x09, 0x01, 0x00 };
+		bool liz = puckLizardActive();
 		for (int s = 0; s < NSLOT; s++) {
-			if (!g_slot[s].used || !hapticLinkUp(s))
+			if (!g_slot[s].used || !hapticLinkUp(s)) {
+				// re-land id9=1 on the next (re)connect: a fresh controller defaults to
+				// autonomous, but one carrying our previous session's id9=0 does not
+				landedAuto[s] = false;
+				lastKeep[s] = 0;
 				continue;
-			if (lastKeep[s] &&
-			    (uint32_t)(millis() - lastKeep[s]) < LIZKEEP_MS)
-				continue;
-			lastKeep[s] = millis();
-			relayEnqueue(0x87, KA, sizeof KA, (uint8_t)s);
+			}
+			if (liz) {
+				if (!landedAuto[s]) {
+					landedAuto[s] = true;
+					relayEnqueue(0x87, K1, sizeof K1,
+						     (uint8_t)s);
+				}
+			} else {
+				landedAuto[s] = false;
+				if (lastKeep[s] &&
+				    (uint32_t)(millis() - lastKeep[s]) <
+					    LIZKEEP_MS)
+					continue;
+				lastKeep[s] = millis();
+				relayEnqueue(0x87, K0, sizeof K0, (uint8_t)s);
+			}
 		}
 	}
 	// Per-slot link-edge detect (backup for hapticOnReconnect in rf_link).
