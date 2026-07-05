@@ -1588,11 +1588,24 @@ function updateFwGate(){
     +"drive it mounts. Every update after that happens right here.";
   for(const c of document.querySelectorAll(".fwupcard")) c.classList.toggle("gated", !ok);
 }
-// after the apply-reboot: resolved true once the panel has reconnected AND received a fresh status blob
+// after the apply-reboot: resolved once the puck is back.
+// Returns true if the panel auto-reconnected and received a fresh status blob (desktop), "appeared"
+// if the puck is visible in getDevices() but openDevice() couldn't be called without a user gesture
+// (Android Chrome), or false on timeout.
 async function waitReconnect(t0,ms){
   const deadline=Date.now()+ms;
+  // seenGone: the puck must disconnect before we can declare it "back".  It is often already gone
+  // by the time this runs (fwupRun sent the reboot command and returned), so initialise from dev.
+  let seenGone=!dev;
   while(Date.now()<deadline){
     if(dev && window._lastBlobTs>t0) return true;
+    if(!dev) seenGone=true;
+    if(seenGone && !dev){
+      try{
+        const ds=await navigator.usb.getDevices();
+        if(ds.some(x=>USB_FILTERS.some(f=>f.vendorId===x.vendorId))) return "appeared";
+      }catch(_e){}
+    }
     await dfuSleep(400);
   }
   return false;
@@ -1621,9 +1634,14 @@ async function runUpdate(title, confirmText, getImage){
     await fwupRun(image);
     modalStage("Applying on the puck",null);
     $("#updDetail").textContent="the puck goes dark ~5 s while the new firmware is written, then re-enumerates";
-    if(await waitReconnect(t0,40000)){
+    const result=await waitReconnect(t0,40000);
+    if(result===true){
       const nb=blobBuildId(lastP);
       modalDone(true,"Update applied — the puck is back and running build "+(nb||"?")+(oldBuild&&nb!==oldBuild?" (was "+oldBuild+")":""));
+    }else if(result==="appeared"){
+      // The puck re-enumerated but the browser couldn't auto-open it (requires a user gesture on
+      // Android Chrome).  The update landed — the user just needs to tap Connect.
+      modalDone(true,"Update applied — the puck is back. Tap Connect to reconnect.");
     }else{
       modalDone(false,"The update was sent and armed, but the puck didn't reconnect within 40 s. Unplug/replug it. "
         +"If it mounts as a UF2BOOT drive, drag the .uf2 onto the drive to recover — the bootloader is intact.");
