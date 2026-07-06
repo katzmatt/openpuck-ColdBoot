@@ -71,9 +71,13 @@ static void lizardEvalSlot(uint32_t buttons, uint8_t &outMod,
 }
 
 // Add the virtual stick-deflection bits so bindings can trigger on left-stick direction.
+// The LZ_BTN_LSTICK_* flags live on bits 28..31, which OVERLAP real controller inputs: bit 28 = right
+// grip touch, bit 29 = left grip touch (PROTOCOL.md §8). Merely holding the controller sets the grip
+// bits, which would masquerade as an L-stick deflection and fire the bound key. Clear the top 4 bits of
+// the physical word (grips are not a bindable lizard input) so these flags reflect ONLY stick deflection.
 static uint32_t lizardButtons(const PuckInput &in)
 {
-	uint32_t buttons = in.buttons;
+	uint32_t buttons = in.buttons & 0x0FFFFFFFu;
 	if (in.lx > 12000)
 		buttons |= LZ_BTN_LSTICK_RT;
 	if (in.lx < -12000)
