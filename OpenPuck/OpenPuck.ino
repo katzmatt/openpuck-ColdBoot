@@ -36,6 +36,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "serial_console.h"
 #include "wake_hid.h"
 #include "status_led.h"
+#include "pwr_switch.h"
 #include "usb_mount.h"
 #include "identity.h"
 #include "fault_diag.h"
@@ -130,6 +131,9 @@ void setup()
 	fwupApplyIfArmed();
 	genSerial();
 	ledInit();
+#if OPK_PWR_SWITCH
+	pwrSwitchInit();
+#endif
 
 	// seed defaults so unbonded slots don't share the discovery address
 	for (int s = 0; s < NSLOT; s++)
@@ -378,6 +382,9 @@ void loop()
 	faultDiagSetStage(6);
 	ledTask();
 	acc[6] += (uint32_t)(micros() - t);
+#if OPK_PWR_SWITCH
+	pwrSwitchTask();
+#endif
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 	faultDiagSetStage(8);
@@ -418,6 +425,9 @@ void loop()
 	hapticTask();
 	faultDiagSetStage(6);
 	ledTask();
+#if OPK_PWR_SWITCH
+	pwrSwitchTask();
+#endif
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 	faultDiagSetStage(8);

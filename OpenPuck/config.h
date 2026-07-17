@@ -21,6 +21,15 @@
 #define OPK_FACTORY_RESET 0
 #endif
 
+// Optional GPIO trigger wired to the HOST motherboard's front-panel power-switch header: fires a
+// momentary pulse when the paired Steam Controller's STEAM button is short-pressed WHILE the host
+// is off (USB not enumerated). 0 (default) = feature compiled out entirely -- no pin driven, no
+// behavior change for anyone without the extra wiring. -DOPK_PWR_SWITCH=1 to enable. See
+// pwr_switch.h for the pin/timing knobs.
+#ifndef OPK_PWR_SWITCH
+#define OPK_PWR_SWITCH 0
+#endif
+
 // ---- USB presentation modes (g_usbMode). RF poll/relay is identical across all; only USB enumeration +
 //      report mapping differ. ----
 #define MODE_STEAM 0 // Valve puck; auto-lizard when Steam closed

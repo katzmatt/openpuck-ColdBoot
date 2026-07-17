@@ -15,7 +15,7 @@ Three contexts matter for every piece of state below:
 
 | Context | Priority / stack | What runs here |
 |---|---|---|
-| **loop task** | Arduino FreeRTOS "loop" task, low priority, ~4 KB stack | Everything called from `loop()`: `webusbPoll`, `g_active->task()`, `serialConsolePoll`, `rfDiagTask`, `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`. Also all of the RF radio code (it is driven synchronously from `rfLinkTask`/`rfDiagTask`). Also `setup()`. |
+| **loop task** | Arduino FreeRTOS "loop" task, low priority, ~4 KB stack | Everything called from `loop()`: `webusbPoll`, `g_active->task()`, `serialConsolePoll`, `rfDiagTask`, `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`, `pwrSwitchTask` (only under `OPK_PWR_SWITCH`). Also all of the RF radio code (it is driven synchronously from `rfLinkTask`/`rfDiagTask`). Also `setup()`. |
 | **usbd task** | TinyUSB "usbd" task, **high priority, ~800-byte stack** | All TinyUSB HID `set_report`/`get_report` callbacks, the custom XInput class-driver xfer callbacks, and (in the Adafruit core) HID `sendReport` queuing context. This is where host→device control transfers are decoded. **Stack is tiny — a `Serial.printf` here can overflow it (the suspected LOCKUP cause), which is why all per-report logging is `#if OPK_LOG` gated.** |
 | **ISR** | Hardware exception | `HardFault_Handler` (fault_diag.cpp). The RADIO is **polled, not interrupt-driven** — there is no radio ISR. |
 
@@ -56,8 +56,10 @@ re-add wake mouse + `g_active->mountSlots(k)` + WebUSB in locked instance order,
 1. Feeds the watchdog (`NRF_WDT->RR[0]`).
 2. If `g_dirty`, `saveBonds()` (flash write in loop context).
 3. Calls, in order: `webusbPoll`, `g_active->task`, `serialConsolePoll`, `rfDiagTask`,
-   `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`.
-   `#if OPK_LOG` wraps each in `micros()` timing for the WebUSB panel.
+   `rfLinkTask`, `hapticTask`, `ledTask`, `pwrSwitchTask` (only under `OPK_PWR_SWITCH`),
+   `usbMountTask`.
+   `#if OPK_LOG` wraps each in `micros()` timing for the WebUSB panel (`pwrSwitchTask`
+   is untimed, like `usbMountTask`/`usbTxPump`).
 
 ### State owned
 - `g_usbCfgDesc[512]` — config-descriptor build buffer (puck composite + WebUSB exceeds 256 B).
@@ -464,6 +466,18 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
 ### `status_led.cpp` / `status_led.h` (loop task)
 Drives two GPIO pins (LED_BUILTIN + pin 24) together. `ledWakePulse()` lights them and
 stamps `g_pulseMs`; `ledTask()` clears after `PULSE_MS=500`. No buffers/delays/radio.
+
+### `pwr_switch.cpp` / `pwr_switch.h` (loop task; compiled in only under `OPK_PWR_SWITCH`)
+Drives one GPIO pin, wired externally to the HOST motherboard's power-switch header, to
+power the PC on. `pwrSwitchTask()`: (1) debounces `USBDevice.mounted()==false` for
+`HOST_OFF_DEBOUNCE_MS` into a `hostOff` flag; (2) per slot, independently re-derives the
+Steam-button short-press edge already detected in `rf_link.cpp` by reading `g_in[s].buttons`
++ `g_connReplyMs[s]` directly (same pattern `haptics.cpp`'s `hapticOnReconnect` uses against
+`rf_link.cpp`'s own link-up edge) — gated on that slot being link-up so a mid-press link drop
+(which zeroes `g_in[s]`) can't read as a release; (3) on a completed short press with
+`hostOff` true, outside a `RETRIGGER_COOLDOWN_MS` window, and no pulse already in flight,
+pulses the pin for `PULSE_MS` (non-blocking release, same idiom as `status_led.cpp`). No new
+cross-task shared state — every static here is loop-task-only.
 
 ### `fault_diag.cpp` / `fault_diag.h`
 - **`HardFault_Handler()` (ISR / exception context)** — a **strong override** of the
