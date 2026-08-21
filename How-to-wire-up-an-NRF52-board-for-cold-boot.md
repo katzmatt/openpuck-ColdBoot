@@ -1,6 +1,6 @@
 # ColdBoot Functionality
 
-<img width="1304" height="438" alt="ColdBoot circuit schematic" src="https://github.com/user-attachments/assets/72845c85-a650-47be-856f-c60948f76009" />
+<img alt="ColdBoot circuit schematic" src="https://github.com/user-attachments/assets/72845c85-a650-47be-856f-c60948f76009" />
 
 <img width="303" height="305" alt="FP1 front-panel connector pinout" src="https://github.com/user-attachments/assets/765b12bb-53e0-48b6-81d6-4af9bcdacdd8" />
 
