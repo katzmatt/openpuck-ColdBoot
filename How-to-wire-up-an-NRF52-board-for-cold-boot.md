@@ -37,7 +37,7 @@
 >
 > Your motherboard's FP1 connector may not match the pinout shown above. Check your motherboard manual first. If you wire this in line with the power button and it does not work, reverse the two pins and try again.
 
-<img width="3024" height="4032" alt="image" src="https://github.com/user-attachments/assets/28be0984-1f17-4c78-a56e-fc294f698c88" />
-<img width="3024" height="4032" alt="image" src="https://github.com/user-attachments/assets/1bfe6c3e-c16e-4c26-aaa8-363b7662873f" />
-<img width="3024" height="4032" alt="image" src="https://github.com/user-attachments/assets/085c2337-4bdd-4cf4-b58b-6c189a6b0f1d" />
-<img width="3024" height="4032" alt="image" src="https://github.com/user-attachments/assets/897e0741-b2a4-4c3c-93a3-ba05dec8c5ac" />
+<img alt="image" src="https://github.com/user-attachments/assets/28be0984-1f17-4c78-a56e-fc294f698c88" />
+<img alt="image" src="https://github.com/user-attachments/assets/1bfe6c3e-c16e-4c26-aaa8-363b7662873f" />
+<img alt="image" src="https://github.com/user-attachments/assets/085c2337-4bdd-4cf4-b58b-6c189a6b0f1d" />
+<img alt="image" src="https://github.com/user-attachments/assets/897e0741-b2a4-4c3c-93a3-ba05dec8c5ac" />
