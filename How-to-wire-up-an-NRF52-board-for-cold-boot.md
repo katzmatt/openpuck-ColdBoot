@@ -2,7 +2,7 @@
 
 <img alt="ColdBoot circuit schematic" src="https://github.com/user-attachments/assets/72845c85-a650-47be-856f-c60948f76009" />
 
-<img width="303" height="305" alt="FP1 front-panel connector pinout" src="https://github.com/user-attachments/assets/765b12bb-53e0-48b6-81d6-4af9bcdacdd8" />
+<img alt="FP1 front-panel connector pinout" src="https://github.com/user-attachments/assets/765b12bb-53e0-48b6-81d6-4af9bcdacdd8" />
 
 **Capability:** ColdBoot lets a paired Steam Controller turn the PC on from a fully off state. Short-press the Steam button. The Pro Micro pulses a GPIO pin. The pulse closes the PC's power switch circuit, the same as a press of the case power button. This works because the USB port keeps standby power on the Pro Micro even while the PC is off, so it stays awake and keeps listening for the button press. ColdBoot is off by default in the firmware and needs the extra wiring below to work.
 
