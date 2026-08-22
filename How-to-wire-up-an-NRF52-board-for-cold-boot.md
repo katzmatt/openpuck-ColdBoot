@@ -20,7 +20,7 @@
 | 1 (optional) | LED + matching series resistor (e.g. 330 Ω) — diagnostic, lights each time the pulse fires |
 
 **Setup:**
-1. Check that pin 29 is correct for your board. Some Pro Micro clones print it as `017` instead of `029`, and the mapping can change with the board core. If you are not sure, flash [`blink_test/blink_test.ino`](./blink_test/blink_test.ino) first. It blinks one pin so you can confirm it by eye, or edit `TEST_PIN` and reflash until you find the right one.
+1. Check that pin 29 is correct for your board. Some Pro Micro clones print it as `017` instead of `029`, and the mapping can change with the board core. If you are not sure, flash a minimal blink sketch first (an `#include <Arduino.h>` sketch that just toggles the pin in `loop()`), so you can confirm the pin by eye before wiring anything up.
 2. Build the circuit shown in the schematic above. Connect Pro Micro pin 29 to one leg of the 1 kΩ resistor.
 3. Connect the other leg of the resistor to the base of Q1 (2N3904).
 4. Connect the collector of Q1 to the `PWRBTN#` pin on the motherboard's FP1 header, shown in the pinout diagram above.
