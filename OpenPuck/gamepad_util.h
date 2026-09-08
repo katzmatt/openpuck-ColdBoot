@@ -25,6 +25,15 @@ static inline void le16(uint8_t *p, int16_t v)
 // and 0x05 (DualSense) -- identical layout; the caller returns size-1 and leaves trailing bytes zero.
 void psNeutralCalib(uint8_t *buf);
 
+// Shared Steam-controller -> Sony sensor coordinate transform.
+// Gyro and accelerometer use the same signed permutation for coherent fusion.
+struct PsImuFrame {
+	int16_t gx, gy, gz;
+	int16_t ax, ay, az;
+};
+PsImuFrame psImuFromSteam(const PuckInput &in);
+void psPadClickEdge(uint8_t slot, bool pressed);
+
 // Steam trackpad s16 coords -> absolute touch surface. TOUCH_PAD_W is split into left/right halves so both
 // pads can co-exist as two contacts on a single DualSense/DS4 touchpad.
 #define TOUCH_PAD_W 1920u
@@ -36,9 +45,26 @@ void touchPackPoint(uint8_t *base, int finger, bool touch, uint16_t x,
 // DualSense / DS4: many hosts only honor contact slot 0 -- put a lone pad in slot 0, both pads in 0+1.
 void touchPackPads(uint8_t *pts, bool lTouch, bool rTouch, uint16_t lx,
 		   uint16_t ly, uint16_t rx, uint16_t ry);
+void touchPackPadsStateful(uint8_t stateSlot, uint8_t *pts, bool lTouch,
+			   bool rTouch, uint16_t lx, uint16_t ly, uint16_t rx,
+			   uint16_t ry);
 void steamPadsToTouch(uint32_t b, uint16_t touchH, int16_t lpx, int16_t lpy,
 		      int16_t rpx, int16_t rpy, uint16_t *lx, uint16_t *ly,
 		      uint16_t *rx, uint16_t *ry);
+
+// Trackpad -> analog stick blend (WebUI "map trackpad to joystick", g_padStick). A pad mapped to a stick
+// BLENDS with it rather than replacing it: while the pad is touched each axis reports whichever of the two
+// sources is deflected further from center (signed), so pad and stick stay usable at the same time. An
+// untouched pad contributes nothing and the physical stick passes through unchanged -- which also means a
+// release can never leave a stale pad value stuck on the axis. b = raw TB_* buttons (touch bits); the
+// sticks are updated in place.
+void padStickBlend(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
+		   int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
+		   int16_t *ry);
+
+// g_in[slot] sticks with padStickBlend applied -- what every emulated mode should send to the host.
+void slotSticks(uint8_t slot, int16_t *lx, int16_t *ly, int16_t *rx,
+		int16_t *ry);
 
 // Convert configurable button code -> TB_* flag (shared across modes).
 static inline uint32_t tritonFromCode(uint8_t c)

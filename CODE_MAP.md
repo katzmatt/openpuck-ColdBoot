@@ -78,8 +78,9 @@ re-add wake mouse + `g_active->mountSlots(k)` + WebUSB in locked instance order,
   (`g_swGyroLegacy` is declared here but lives in `mode_switch_pro.cpp`/`swprocfg.bin`.)
 - `struct Cfg` is serialized to `/cfg.bin` (LittleFS), magic `0xCF`. `rxWin10`,
   `lizKeep`, `landAll87` and the per-type table travel with it; `rsvd0` is the
-  one-shot debug-CDC arm and `rsvd1` the ex-rumble-strength slot (both kept so the
-  on-flash layout is unchanged). New fields are **appended to the tail** (`chordDpad[4]`) —
+  one-shot debug-CDC arm and `rumbScale2` the rumble-strength slot (removed in protocol
+  v19, revived in v21 as percent/2; 0 = never set -> compiled default, so the on-flash
+  layout is unchanged). New fields are **appended to the tail** (`chordDpad[4]`) —
   `loadCfg()` prefills `0xFF` and accepts a file short by only the tail (`CFG_LEN_MIN`),
   so an upgrade keeps every existing setting and unwritten tail bytes fall back to defaults.
 - `loadCfg()` resolves the boot mode policy: one-shot `bootMode` wins once then clears;
@@ -353,6 +354,40 @@ DS4-layout (054C:05C4) + gyro. Same structure as PS5.
 calib helper `psNeutralCalib` writes 34 bytes (buf[6..33]) while callers return 36/40
 (remainder zeroed by the prior memset).
 
+## 10b. Open / generic personalities
+
+### `mode_dinput.cpp` / `mode_dinput.h`  (`g_dinputCtl`, MODE_DINPUT)
+Generic DirectInput joystick (1209:4F50). Dynamic-mount, STREAM-style, **no report
+callbacks → no usbd-task user code** (input-only: DirectInput force feedback is the PID
+class, not the vendor rumble reports the other modes decode).
+- **Descriptor**: ONE `DI_HID_DESC` with **two top-level Application collections** →
+  Windows makes one HIDClass PDO (= one DirectInput device) per collection, which is how
+  13 analog inputs fit a format capped at 8 axes/device. Report 1 = sticks/triggers/hat +
+  26 buttons; report 2 = both trackpads + gyro XYZ + 4 pad buttons. Both 15 payload bytes.
+- **loop task**: `task()` rate-gated (`USB_STREAM_MS`), `diBuildStick` + `diBuildMotion`
+  from `g_in[bond]`, two `usbTxHid` sends per slot per tick.
+- **State**: `g_padAxis[NSLOT]` — LATCHED trackpad axes (a pad only reports while touched,
+  so the axis holds the last position and a pad CLICK re-centres it). Loop-context only.
+- Buttons are the RAW `TB_*` bits (no `psButtonsFromSteam` remap; `etypeForMode` = ET_NONE).
+
+### `mode_sinput.cpp` / `mode_sinput.h`  (`g_sinputCtl`, MODE_SINPUT)
+SInput, the open SDL-native gamepad protocol (2E8A:10C6 = the generic ID SDL's SInput
+driver matches). Dynamic-mount, STREAM-style. **Registers a set-report callback.**
+- **Wire format** (SDL `SDL_hidapi_sinput.c` + the MIT-0 reference lib): 64-byte input
+  `0x01` = plug/charge, 4 button bytes, 6×s16 sticks+triggers, u32 IMU timestamp, 6×s16
+  accel+gyro, 2×(s16 x, y, pressure) touchpads; 64-byte input `0x02` = command replies;
+  48-byte output `0x03` = `[cmd]` HAPTIC(1) / FEATURES(2) / PLAYERLED(3) / RGB(4).
+- **usbd task**: `sinSetCommon` → FEATURES sets `g_sinFeatReq[slot]`; HAPTIC type 1
+  (freq/amp pairs, louder band per side) or type 2 (ERM amplitudes) →
+  `hapticSteamRumble(lo, hi, bond)`.
+- **loop task**: `task()` answers a pending FEATURES **ahead of the stream gate** (SDL's
+  init gives up after ~100 ms) via `sinBuildFeatures` → `usbTxHid(0x02,…)`, then the
+  rate-gated `sinBuild` → `usbTxHid(0x01,…)`.
+- **Cross-task**: `g_sinFeatReq[NSLOT]` (`volatile`, set usbd / cleared loop);
+  `g_usbToBond[]` read in usbd (bounds-checked), as in the PS modes.
+- IMU passes through raw: the SInput wire frame (+x left, +y forward, +z up) IS the SC2's
+  own frame, and accel/gyro keep the SAME permutation (the fusion-handedness constraint).
+
 ### `gamepad_util.cpp` / `gamepad_util.h` — shared report-builders (called from loop task)
 `swStick`, `psNeutralCalib` (writes through `buf[33]`), trackpad→touch mappers
 (`touchPackPads` writes 8 bytes = two 4-byte points), `psButtonsFromSteam` (back-paddle/
@@ -382,9 +417,13 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
 - `g_testHaptic`, `g_hapticStop` (`volatile`), `g_hapticBlockOn`, `g_hapticBlockMs`,
   `g_hapticBlockUntil[NSLOT]`, `g_relayOp`, `g_relaySub`.
 - `hapticSendShutdown()` — bursts 0x9F "off!" (`{6f 66 66 21}`) ×3 broadcast.
-- `hapticSteamRumble(low, high, slot)` — builds a 9-byte 0x80 report (×`RUMBLE_SCALE_PCT`),
-  `relayEnqueue(0x80, p, 9, slot)`; **called from usbd (mode rumble callbacks) and loop**.
-  Per-slot stuck-rumble tracking `g_rumble80On/Ms[NSLOT]`.
+- `hapticSteamRumble(low, high, slot)` — shapes the two amplitudes (`g_rumbleStyle`, then
+  `g_rumbleScale` %; integer-only, this runs in the USB OUT callback), builds a 9-byte 0x80
+  report, `relayEnqueue(0x80, p, 9, slot)`; **called from usbd (mode rumble callbacks) and
+  loop**. Per-slot stuck-rumble tracking `g_rumble80On/Ms[NSLOT]`.
+- `hapticTestRumble()` — one `RUMBLE_TEST_AMP` buzz to every linked slot through the same
+  shaping path (panel op `0x16`, console `TR`); `hapticTask()` sends the stop after
+  `RUMBLE_TEST_MS` — the actuator latches, so the stop is not optional.
 - `haptic82Blocked`/`hapticLinkUp`/`hapticRelaySlotOk` — link-up + block gates (read
   `g_connReplyMs`, `g_slot`).
 - `hapticOnReconnect(slot)` — arms the per-slot block + schedules `g_reinitLeft` re-init
@@ -437,6 +476,7 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
   mutates config tunables (writes `g_type`, `g_mDiv/Fric`, `g_rxWin` (clamped 600..3000),
   `g_hapticBlockMs` (≤60 s), etc., then `applyActiveType`/`saveCfg`/`swProSaveCfg`);
   `0x03 mode`→`saveMode`+reset; `0x07`→`hapticReinit`; `0x08`→`hapticSendShutdown`;
+  `0x16`→`hapticTestRumble`;
   `0x0A` ("ERS")→`factoryErase`+reset; `0x0B/0x0C`→DFU; capture drain (`OPK_LOG`).
   Each reset/DFU path does `delay(40)` then `NVIC_SystemReset()` (harmless — reboots).
 
@@ -503,6 +543,7 @@ State touched by **both** the loop task and the usbd task (the synchronization-c
 | **`g_rq[NSLOT][32]` relay rings** + `g_rqHead/Tail` (haptics) | usbd HID callbacks (`handleSet`, mode rumble cbs) + loop (console/test/`hapticTask`) | loop `rfConnFlushRelay` | **Producers under PRIMASK**; `volatile` head/tail; ring body not volatile; SPSC-drain per slot |
 | **`g_slot[NSLOT].rec/used/resp`** (bonds) | usbd `handleSet` (0xA2 / reply staging) + loop (`loadBonds`) | loop RF/webusb/console, usbd `handleGet` | `resp` is same-task (usbd); `g_dirty` (`volatile`) defers the flash write to loop |
 | **`g_dirty`** | usbd `handleSet` | loop `loop()` → `saveBonds` | `volatile` flag |
+| **`g_padStick[2]`** (config, trackpad→stick live mirror) | loop `applyActiveType()` (boot + WebUSB setter) | loop mode builders via `slotSticks`; **usbd `jcInputPrefix` (switch pro)** | none; plain `uint8_t` byte writes, worst case one stale frame (same shape as `g_abSwap`/`g_back[]`) |
 | **`g_in[NSLOT]`** (decoded input) | loop `rf_link` decode | loop mode `task()`/`onReport45`; **usbd `jcInputPrefix` (switch pro)**; webusb | none (single writer; readers tolerate staleness) |
 | **`g_connReplyMs[NSLOT]`** | loop `rf_link` | loop puck_hid/usb_mount/haptics/webusb; usbd haptic gates | none (plain `unsigned long`) |
 | **`g_battery/g_batteryState/g_linkRssi[NSLOT]`** | loop `rf_link` | loop puck_hid `task`/webusb | declared `volatile` |

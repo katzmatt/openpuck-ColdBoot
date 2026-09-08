@@ -182,6 +182,15 @@ void deckForwardHaptic(uint8_t rid, const uint8_t *d, uint8_t n)
 			right = (uint16_t)(d[6] | (d[7] << 8));
 			rgain = d[8];
 		}
+	} else if (rid == 0x81 && n >= 3) {
+		// OUTPUT report 0x81 = HAPTIC_PULSE [side][on_us u16][off_us u16][repeat u16] -- Steam's trackpad
+		// CLICK and trigger full-pull cues. (0x81 in the FEATURE command space is CLEAR_DIGITAL_MAPPINGS,
+		// a different thing entirely; this path only ever sees relayed OUTPUT reports.) The Deck has no
+		// per-pad clicker, so synthesize a short mid-strength buzz on both motors.
+		if (d[1] || d[2]) { // on_us != 0
+			intensity = 0x6000;
+			left = right = 0x6000;
+		}
 	} else if (rid == 0x82 || rid == 0x8F) {
 		// discrete haptic click/pulse (data ~ [01 01 F7]; trailing byte F7=on, 00=off). The Deck has no
 		// per-pad clicker, so synthesize a short mid-strength buzz on both motors.

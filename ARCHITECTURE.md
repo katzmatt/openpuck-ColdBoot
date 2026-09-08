@@ -81,6 +81,8 @@ just points at the `OpenPuck` directory). Modules are layered low → high:
 | `mode_switch_pro.{h,cpp}` | **Switch Pro** personality: the full Nintendo USB handshake/subcommand state machine + SPI calibration + gyro. |
 | `mode_ps5.{h,cpp}` | **PS5 DualSense** personality: gyro + split trackpad. |
 | `mode_hidgyro.{h,cpp}` | **DS4-layout** generic HID gyro personality (motion-aware PC games). |
+| `mode_dinput.{h,cpp}` | **DirectInput** personality: two joystick collections so every analog input (sticks, triggers, both trackpads, gyro) is bindable at once in flight/space sims. |
+| `mode_sinput.{h,cpp}` | **SInput** personality: the open SDL-native gamepad protocol (sticks, analog triggers, IMU, two touchpads, battery, rumble). |
 | `rf_link.{h,cpp}` | The operational puck protocol: host-frame beacons, connected-mode poll loop, `0xF1` decode + dispatch, chord detection, remote wakeup, QoS hopping, stats. |
 | `rf_diag.{h,cpp}` | RF reverse-engineering / calibration tooling: raw capture, CRC-validating config sweeps, frame replay, address listen, scan-then-respond, live-session sniffer. Not used in normal operation. |
 | `webusb_config.{h,cpp}` | The WebUSB binary config channel for the browser panel. |

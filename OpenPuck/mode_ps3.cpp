@@ -284,10 +284,12 @@ static void ds3Build(uint8_t slot, uint8_t out[48])
 	out[3] = (b & TB_STEAM) ? 0x01 : 0;
 
 	// out[5..8] (rd[6..9]): LX LY RX RY, center 0x80
-	out[5] = swStick(g_in[slot].lx, false);
-	out[6] = swStick(g_in[slot].ly, true);
-	out[7] = swStick(g_in[slot].rx, false);
-	out[8] = swStick(g_in[slot].ry, true);
+	int16_t lx, ly, rx, ry;
+	slotSticks(slot, &lx, &ly, &rx, &ry);
+	out[5] = swStick(lx, false);
+	out[6] = swStick(ly, true);
+	out[7] = swStick(rx, false);
+	out[8] = swStick(ry, true);
 
 	// out[13..24] (rd[14..25]): analog pressures, order Up Right Down Left L2 R2 L1 R1 Tri Cir Cross Square
 	out[13] = (b & TB_DUP) ? 0xFF : 0;
@@ -303,10 +305,11 @@ static void ds3Build(uint8_t slot, uint8_t out[48])
 	out[23] = crs ? 0xFF : 0;
 	out[24] = sqr ? 0xFF : 0;
 
-	// out[28..29] (rd[29..30]): connection/charge status. Battery "full"; cosmetic on the PS3 over USB
-	// (the console knows it's wired from enumeration, not this byte).
-	out[28] = 0x00;
-	out[29] = 0x05; // battery level: full
+	// out[28..30] (rd[29..31]): genuine DS3 link/power state.
+	// 0x02 = plugged, 0x05 = full power, 0x10 = wired + rumble capable.
+	out[28] = 0x02;
+	out[29] = 0x05;
+	out[30] = 0x10;
 
 	// out[40..47] (rd[41..48]): accel X, accel Z, accel Y, gyro Z -- each 10-bit LE, center 511.
 	ds3Imu(out + 40, g_in[slot].ax);
@@ -321,7 +324,10 @@ static void ds3Neutral(uint8_t out[48])
 {
 	memset(out, 0, 48);
 	out[5] = out[6] = out[7] = out[8] = 0x80; // sticks centered
-	out[29] = 0x05; // battery full
+	// Keep neutral reports semantically identical to an attached wired DS3.
+	out[28] = 0x02; // plugged
+	out[29] = 0x05; // full power
+	out[30] = 0x10; // wired + rumble capable
 	ds3Imu(out + 40, 0);
 	ds3Imu(out + 42, 0);
 	ds3Imu(out + 44, 0);
@@ -332,6 +338,7 @@ void Ps3Controller::usbIdentity()
 {
 	// Genuine Sixaxis / DualShock 3 identity. The PS3 recognises the pad by exactly this VID/PID.
 	USBDevice.setID(0x054C, 0x0268);
+	USBDevice.setVersion(0x0200);
 	USBDevice.setDeviceVersion(0x0100);
 	USBDevice.setManufacturerDescriptor("Sony");
 	USBDevice.setProductDescriptor("PLAYSTATION(R)3 Controller");

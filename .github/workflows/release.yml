@@ -163,28 +163,36 @@ jobs:
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"
           ls -la release_assets
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ steps.release_version.outputs.version }}
-          name: ${{ format('OpenPuck {0}', steps.release_version.outputs.version) }}
-          prerelease: false
-          files: release_assets/*
-          body: |
-            OpenPuck Firmware Release
-
-            Version: ${{ steps.release_version.outputs.version }}
-            Commit: ${{ github.sha }}
-
-            ### Files included:
-
-            - `OpenPuck-*-standard.*` — puck firmware (standard)
-            - `OpenPuck-*-factory-reset.*` — puck firmware (factory reset)
-            - `ReversePuckFirmware-*.*` — reverse-puck firmware (controller emulator)
-            - `.uf2` files for drag-and-drop flashing (BOOT/UF2 drive)
-            - `.hex` files for direct flashing workflows
+      - name: Publish artifacts to the GitHub Release
+        # NEVER rewrite an existing release's notes, title or pre-release flag. This job also runs on
+        # `release: published`, i.e. right after a human wrote release notes in the UI (or marked the
+        # release as a pre-release) -- rewriting the release here would throw that away. So: upload the
+        # assets onto an existing release, and only author a default title/body when we are the ones
+        # creating the release (a bare semver tag push, no release object yet).
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.release_version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "release $VERSION already exists; uploading assets only (notes/title/pre-release preserved)"
+            gh release upload "$VERSION" release_assets/* --clobber
+          else
+            gh release create "$VERSION" release_assets/* \
+              --title "OpenPuck $VERSION" \
+              --notes "OpenPuck Firmware Release
+
+          Version: ${VERSION}
+          Commit: ${GITHUB_SHA}
+
+          ### Files included:
+
+          - \`OpenPuck-*-standard.*\` — puck firmware (standard)
+          - \`OpenPuck-*-factory-reset.*\` — puck firmware (factory reset)
+          - \`ReversePuckFirmware-*.*\` — reverse-puck firmware (controller emulator)
+          - \`.uf2\` files for drag-and-drop flashing (BOOT/UF2 drive)
+          - \`.hex\` files for direct flashing workflows"
+          fi
 
       - name: Mirror OpenPuck UF2s to the firmware branch
         # The WebUSB panel's "update from a release" flow downloads these in-browser. GitHub's release-asset

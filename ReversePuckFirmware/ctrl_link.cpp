@@ -334,7 +334,7 @@ static uint8_t rxOnce(const uint8_t *base, uint8_t prefix, uint8_t ch,
 					    rfrx[4] == 0x05) {
 						// Relayed Steam OUTPUT (SET): E3 [tlvlen][05][rid][data]. The puck
 						// forwards Steam's rumble/haptic/LED writes this way (legacy type-05
-						// form). Hand rumble (0x80) / haptic pulses (0x82/0x8F) to the Deck so
+						// form). Hand rumble (0x80) / haptic pulses (0x81/0x82/0x8F) to the Deck so
 						// it buzzes; relays are NO_ACK so we DON'T reply.
 						uint8_t rl =
 							(rfrx[3] >= 1) ?

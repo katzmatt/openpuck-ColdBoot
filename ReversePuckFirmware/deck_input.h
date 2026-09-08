@@ -34,7 +34,8 @@ void deckHapticTask();
 void deckText(const char *s);
 
 // Forward a relayed Steam haptic/rumble to the Deck as a HAPTIC frame (the app plays it as Deck rumble).
-// rid = the relayed report id (0x80 SDL Triton rumble, 0x82/0x8F haptic pulse); d/n = its raw payload.
+// rid = the relayed report id (0x80 Triton rumble, 0x81 HAPTIC_PULSE, 0x82 HAPTIC_COMMAND, 0x8F legacy
+// feature pulse); d/n = its raw payload.
 void deckForwardHaptic(uint8_t rid, const uint8_t *d, uint8_t n);
 
 // Is the app currently forwarding (user tapped a puck)? When false, ctrl_link sends a neutral report.

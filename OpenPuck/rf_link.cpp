@@ -135,6 +135,7 @@ static unsigned long g_stMs = 0;
 // Per-slot dedupe seq + per-slot new-report counter (the real puck sends 0x45 per controller; merging all
 // slots into a single sequence makes one controller "swallow" the other's frame).
 static uint8_t g_lastSeq[NSLOT] = { 0 };
+static uint8_t g_lastInputRid[NSLOT] = { 0 };
 static uint32_t g_stNew[NSLOT] = {};
 static uint32_t g_stCrc[NSLOT] = {}, g_stNoRx[NSLOT] = {};
 static uint32_t g_chF1[3] = { 0, 0, 0 };
@@ -439,20 +440,29 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					// ([46..47]=0x7FFF const, [48..53]=0) and sets two extra always-on status bits (28/29) that no
 					// mode reads. So both decode through this ONE path unchanged; rep[0] carries the id downstream
 					// (Steam forwards it verbatim under the right id/length in onReport45).
-					if (ttype == 6 && tlen >= 28 &&
+					if (ttype == 6 &&
+					    (((tlen >= 28) &&
+					      (rfrx[idx + 2] == 0x45 ||
+					       rfrx[idx + 2] == 0x42)) ||
+					     (tlen == 46 &&
+					      rfrx[idx + 2] ==
+						      OPK_TRITON_REPORT_STATE_TIMESTAMP)) &&
 					    (size_t)(idx + 2) + tlen <=
-						    sizeof(rfrx) &&
-					    (rfrx[idx + 2] == 0x45 ||
-					     rfrx[idx + 2] == 0x42)) {
+						    sizeof(rfrx)) {
 						// report 0x45/0x42: [id][seq][buttons u32]...
 						const uint8_t *rep =
 							&rfrx[idx + 2];
 						bool fresh =
-							(rep[1] !=
-							 g_lastSeq[g_curSlot]);
-						// genuine new report vs stale poll-repeat
+							(rep[0] !=
+								 g_lastInputRid
+									 [g_curSlot] ||
+							 rep[1] !=
+								 g_lastSeq[g_curSlot]);
+						// genuine new report vs stale poll-repeat; a report-id transition is also fresh
 						if (fresh) {
 							g_stNew[g_curSlot]++;
+							g_lastInputRid[g_curSlot] =
+								rep[0];
 							g_lastSeq[g_curSlot] =
 								rep[1];
 						}
@@ -576,18 +586,44 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						// for the Switch digital-trigger threshold
 						g_in[g_curSlot].rt =
 							trigU8(u16off(rep, 6));
-						g_in[g_curSlot].lpx =
-							(int16_t)s16off(rep,
-									16);
-						g_in[g_curSlot].lpy =
-							(int16_t)s16off(rep,
+						// Timestamped report 0x47 inserts unTrackpadTimestamp before the pad coordinates.
+						if (rep[0] ==
+						    OPK_TRITON_REPORT_STATE_TIMESTAMP) {
+							g_in[g_curSlot].lpx =
+								(int16_t)s16off(
+									rep,
 									18);
-						g_in[g_curSlot].rpx =
-							(int16_t)s16off(rep,
-									22);
-						g_in[g_curSlot].rpy =
-							(int16_t)s16off(rep,
+							g_in[g_curSlot].lpy =
+								(int16_t)s16off(
+									rep,
+									20);
+							g_in[g_curSlot].rpx =
+								(int16_t)s16off(
+									rep,
 									24);
+							g_in[g_curSlot].rpy =
+								(int16_t)s16off(
+									rep,
+									26);
+						} else {
+							g_in[g_curSlot].lpx =
+								(int16_t)s16off(
+									rep,
+									16);
+							g_in[g_curSlot].lpy =
+								(int16_t)s16off(
+									rep,
+									18);
+							g_in[g_curSlot].rpx =
+								(int16_t)s16off(
+									rep,
+									22);
+							g_in[g_curSlot].rpy =
+								(int16_t)s16off(
+									rep,
+									24);
+						}
+
 						// IMU lives at report bytes 0x22..0x2D (rep[34..45]). Decode it ONLY when a FULL 46-byte report was
 						// actually received -- bounded by `end` (the received length), NOT sizeof(rfrx). The outer gate is
 						// tlen>=28 (enough for buttons/sticks/pads, which end at rep[27]), so a short 0x45 (button-only, or
@@ -595,7 +631,40 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						// past the received data and clobber g_in's gyro/accel. On a short frame, hold the last good IMU.
 						if (tlen >= 46 &&
 						    (size_t)(idx + 2) + 46 <=
-							    (size_t)end)
+							    (size_t)end) {
+							// SDL 0x47 uses a wrapping 16-bit IMU clock in 32-us units; legacy
+							// 0x42/0x45 retain the 32-bit microsecond timestamp at rep[30..33].
+							if (rep[0] ==
+							    OPK_TRITON_REPORT_STATE_TIMESTAMP) {
+								uint16_t tick47 =
+									(uint16_t)rep
+										[32] |
+									((uint16_t)rep
+										 [33]
+									 << 8);
+								g_in[g_curSlot]
+									.imuTimestampUs = tritonTimestamp47Us(
+									(uint8_t)
+										g_curSlot,
+									tick47);
+							} else {
+								tritonTimestamp47Reset(
+									(uint8_t)
+										g_curSlot);
+								g_in[g_curSlot]
+									.imuTimestampUs =
+									(uint32_t)rep
+										[30] |
+									((uint32_t)rep
+										 [31]
+									 << 8) |
+									((uint32_t)rep
+										 [32]
+									 << 16) |
+									((uint32_t)rep
+										 [33]
+									 << 24);
+							}
 							imuFrom45(
 								rep,
 								&g_in[g_curSlot]
@@ -610,6 +679,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									 .gy,
 								&g_in[g_curSlot]
 									 .gz);
+						}
 						// Mode-switch chord (all 4 back + face/dpad): don't leak the press to the host. g_in[g_curSlot].buttons stays
 						// intact so the chord detector still fires; per-mode builders mask the same bits while back-4 held.
 						if ((bb & CHORD_BACK4) ==
@@ -691,7 +761,50 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									     i]);
 							Serial.println();
 						}
+					} else if ((ttype == 2 || ttype == 4) &&
+						   tlen >= 1 &&
+						   (size_t)(idx + 2) + tlen <=
+							   sizeof(rfrx)) {
+						// tag 0x02 ("control/status field") and tag 0x04 ("bulk data blob") --
+						// docs/PROTOCOL.md sec 7.3. CONFIRMED from a real puck<->controller capture
+						// (2026-08-10): tag-2 (`00 00 00 00`) is an immediate "request received" ack
+						// for a landed feature-01 query; tag-4, arriving on a LATER poll, carries the
+						// query's real answer as `[echoed report_id][len][payload]`. This is the reply
+						// channel for the feature-01 queries (0x83/0xAE/0xED) puck_hid.cpp now relays
+						// for real when rid==1 -- route it into whichever slot is waiting on exactly
+						// this cmd (pendingQueryCmd, bonds.h), so a stray/late/mismatched tag-4 can't
+						// clobber a slot that has moved on to a different query.
+						const uint8_t *rec =
+							&rfrx[idx + 2];
+						if (ttype == 4 && tlen >= 2 &&
+						    rec[0] != 0 &&
+						    (uint16_t)(2 + rec[1]) <=
+							    tlen &&
+						    rec[1] <= 61 &&
+						    g_curSlot >= 0 &&
+						    g_curSlot < NSLOT &&
+						    g_slot[g_curSlot].pendingQueryCmd ==
+							    rec[0]) {
+							// `resp`/`resp_len` are also written from handleSet (switch(cmd)) and
+							// read from handleGet -- both on the usbd task. Match the PRIMASK-guard
+							// pattern the rest of this file uses for usbd<->loop shared state
+							// (relayEnqueue/hapLogAdd/fcPush) so a GET_FEATURE can't observe a torn
+							// write mid-memcpy.
+							Slot &S =
+								g_slot[g_curSlot];
+							uint32_t pm =
+								__get_PRIMASK();
+							__disable_irq();
+							S.resp[0] = rec[0];
+							S.resp[1] = rec[1];
+							memcpy(S.resp + 2,
+							       rec + 2, rec[1]);
+							S.resp_len = 63;
+							S.pendingQueryCmd = 0;
+							__set_PRIMASK(pm);
+						}
 					}
+
 					idx += tlen + 2;
 				}
 				// mode-switch chord (back4 + face/dpad): A=always Steam; B/X/Y=configurable (g_chordBtn[]);
@@ -1022,6 +1135,8 @@ void rfLinkTask()
 				  (millis() - g_connReplyMs[s] < 300u);
 			if (wasUp[s] && !up) {
 				memset(&g_in[s], 0, sizeof g_in[s]);
+				tritonTimestamp47Reset((uint8_t)s);
+				g_lastInputRid[s] = 0;
 				if (g_active)
 					g_active->onReport45(s, neutral45, true,
 							     sizeof neutral45);

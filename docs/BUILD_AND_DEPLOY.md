@@ -70,7 +70,7 @@ make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 boa
 `#error`s without them (so a forgotten flag fails loudly instead of shipping a broken/deadlock-prone image):
 
 ```bash
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" OpenPuck
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb" OpenPuck
 ```
 
 ### 4a. Raytac MDBT50Q-CX-40
@@ -234,7 +234,9 @@ A board already running OpenPuck (status protocol v15+) can be updated entirely 
 [WebUSB configurator](https://safijari.github.io/openpuck/)'s **Firmware update** tab: drag-and-drop a
 `.uf2` (or click to browse), or pick a version from the built-in **releases list** — each release offers the
 standard build or, via its checkbox, the `-factory-reset` build (wipes settings + pairing once on first
-boot). A blocking modal shows download/transfer/verify/apply progress and reports the old → new build once
+boot). Each entry shows the release's GitHub notes under a collapsible **release notes** toggle and, when
+the release is marked as a pre-release on GitHub, a **pre-release** badge (un-marking it on GitHub removes
+the badge on the next list refresh; pre-releases are never suggested by the "update available" notice). A blocking modal shows download/transfer/verify/apply progress and reports the old → new build once
 the puck reconnects. Under the hood the panel extracts the app image from the `.uf2` and streams it over the
 normal WebUSB connection into spare flash high in the app region (~15 s; the running firmware keeps working);
 the firmware CRC32-verifies what landed and commits a one-page "apply on reboot" record; a final automatic
@@ -246,6 +248,11 @@ reboot copies staged→app from RAM (~5 s dark) and comes back up on the new fir
 > onto the orphan **`firmware`** branch, and the panel downloads from
 > `raw.githubusercontent.com/safijari/openpuck/firmware/<asset>` (which is CORS-clean). If a release is
 > missing from the mirror, the panel falls back to opening the asset in a new tab for manual drag-and-drop.
+
+> **Release notes and the pre-release flag are owned by GitHub, not the workflow:** the release job uploads
+> its artifacts onto an existing release (`gh release upload --clobber`) and only authors a title/body when
+> it creates the release itself from a bare tag push. Notes written in the GitHub UI, a custom release
+> title, and the pre-release checkbox therefore survive the artifact build that follows publishing.
 
 Failure safety: **nothing is armed until the staged image verifies in flash**, so a disconnect, error, or
 power cut during the transfer leaves the current firmware untouched. The apply step erases the app's vector

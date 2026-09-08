@@ -1,5 +1,8 @@
 # OpenPuck
-Opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and allows emulation of Xbox, Switch, and PS3/4/5 controllers and also includes an independant lizard mode (which can work on UAC prompts/task manager/etc). The Switch and PS3 modes have been verified to work on real consoles and Switch, PS4/5 modes have gyro (and touchpad where available) hooked in. Back 4 buttons are mappable for all emulated modes.
+
+[![BuyMeACoffee](https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-yellow.svg)](https://github.com/safijari/openpuck/discussions/211)
+
+OpenPuck is an opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and allows emulation of Xbox, Original Xbox, Switch, and PS3/4/5 controllers and also includes an independant lizard mode (which can work on UAC prompts/task manager/etc). The Switch, PS3, and Original Xbox modes have been verified to work on real consoles and Switch, PS4/5 modes have gyro (and touchpad where available) hooked in. Back 4 buttons are mappable for all emulated modes.
 
 > [!WARNING]
 > Every part of this project _HEAVILY_ used LLMs*
@@ -37,6 +40,34 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 5 | DualSense + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 6 | DS4/HIDGYRO + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 9 | PS3 DualShock 3 / Sixaxis | Enumerates on a real PS3 (+ gyro/haptics) |
+| WebUSB panel → mode 10 | Original Xbox Controller S | Enumerates on a real Original Xbox |
+| WebUSB panel → mode 11 | DirectInput (flight/space sims) | Every axis at once, as two DirectInput joysticks |
+| WebUSB panel → mode 12 | SInput (SDL-native) | Sticks + analog triggers + gyro + both trackpads + battery |
+
+**DirectInput mode** exists because Steam Input funnels everything through XInput, so only a handful of the
+controller's analog inputs can be live at once — a problem for flight and space sims, which bind axes through
+DirectInput. DirectInput itself caps a device at 8 axes, so this mode presents the controller as **two**
+joysticks (two HID collections, one USB interface):
+
+| Device | Axes | Buttons |
+|---|---|---|
+| #1 | X/Y = left stick, Rx/Ry = right stick, Z/Rz = left/right trigger, hat = D-pad | 1-26: A B X Y, LB RB, LT RT, Start, Select, L3 R3, D-pad U D L R, L4 R4 L5 R5, pad clicks, pad touches, Steam, QAM |
+| #2 | X/Y = left trackpad, Rx/Ry = right trackpad, Z/Rz/Slider = gyro X/Y/Z | 1-4: left/right pad click, left/right pad touch |
+
+Trackpad axes **latch**: they hold the last touched position (so a pad works as a throttle/trim slider) and
+re-centre when you *click* that pad. No remapping is applied in this mode — every physical button, paddles
+included, is its own bindable button, since the sim does the binding. The mode is input-only: DirectInput
+force feedback is a separate HID class, so rumble is not wired up here (use another mode if you want rumble).
+DirectInput is a Windows API — on Linux/SteamOS the SInput mode below is the one that exposes everything.
+
+**SInput mode** speaks [SInput](https://docs.handheldlegend.com/s/sinput), Hand Held Legend's open gamepad
+protocol that SDL3 and Steam Input bind with a dedicated driver. It is the one mode that doesn't impersonate
+anybody: sticks, *both* analog triggers, gyro + accelerometer, **both** trackpads (as two touchpads) and the
+battery level are all reported natively and simultaneously, with rumble coming back from the host. It needs an
+SDL build that ships the SInput driver (SDL 3.4+ / a current Steam client); older hosts fall back to seeing a
+plain HID gamepad.
+
+**Rumble tuning.** In the translated modes (Xbox, Switch, PlayStation) the puck decodes the host's rumble packet itself, so the WebUSB panel's **Rumble** card can reshape it before it reaches the controller. *Strength* scales the amplitude the game asked for (200% is the default and matches previous firmware). *Style* picks how the two motors are driven: mono runs both at the stronger value, heavy and light mute one motor each, punchy softens weak effects while leaving strong ones alone, and soft lifts weak ones so subtle rumble is felt. A **Test rumble** button buzzes the controller with the current settings so you can compare without launching a game. Steam mode relays Steam's own haptics untouched, so these settings don't apply there.
 
 I'm also adding various QOL items as I go as well. For example having to hold the Steam button for like 6 seconds feels like an eternity. If Steam is open you can do Steam + Y for a shutdown. I'm adding Steam + Y for 2 seconds as a shutdown chort in ALL modes now.
 
@@ -77,6 +108,7 @@ You can copy configurations between OpenPucks using the export/import card in th
 - [BOT-Yanni](https://www.reddit.com/user/BOT-Yanni/) designed a slim case with OpenPuck written on it and a cute little glyph of the Steam Controller. You can find that [here](https://www.thingiverse.com/thing:7379316).
 - [StonnedModder](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case) built a case meant to accomodate a USB C to USB A adapter which you can find [here](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case).
 - Another plain case for these pro micros can be found [here](https://www.printables.com/model/1285346-pro-micro-nicenano-nrf52840-dongle-case/collections).
+- Possibly [the cutest case](https://www.printables.com/model/1830063-openpuck-case-pro-micro-nrf52840) by TheMeanCanEHdian
 
 # ReversePuck
 This is a tool to emulate a Steam Controller 2 with almost all of its inputs (except grip) using a Steam Deck and allow it to connect over a low latency 2.4ghz connection to OpenPuck (this does not work with the official puck yet). Flash the firmware onto an NRF52840 Pro Micro and copy over the ReversePuck folder onto the Steam Deck (you might need to install UV). Then add the ReversePuck script as a non steam game. Attach both the dongle and OpenPuck to the same machine and do pairing through Steam (which will say pairing has failed but it's actually fine). Then connect the OpenPuck to whatever machine you want to use your controllers on and the dongle to the Steam Deck. Launch the ReversePuck app in gamemode and you'll see the serial number of the OpenPuck show up in green. Press it and it'll turn blue at which point the Deck will show up as a controller on the host device. See video below for a demonstration of this in action (yes, other Steam Controllers can be connected to the same OpenPuck at the same time).

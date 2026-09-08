@@ -20,6 +20,8 @@ uint8_t g_chordDpad[4] = { MODE_PS3, MODE_DS4_GAME, MODE_PS5_GAME,
 bool g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
 
+bool g_isMachineInternal = false;
+
 bool g_debugCdcThisBoot = false;
 
 // persisted one-shot arm, stored in Cfg.rsvd0 (1 = keep CDC for the next boot)
@@ -38,6 +40,10 @@ TypeCfg g_type[ET_COUNT] = {
 	/* ET_DS5    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1 },
 };
 uint8_t g_etype = ET_NONE;
+
+// Trackpad -> stick mapping, off for every type by default (pads keep their touch/mouse behavior).
+uint8_t g_padStickCfg[ET_COUNT][2] = {};
+uint8_t g_padStick[2] = { PS_OFF, PS_OFF };
 
 // Live mirrors of the active type (puck modes use the harmless defaults below).
 uint8_t g_abSwap = 0;
@@ -61,6 +67,7 @@ void applyActiveType()
 		g_padHaptics = 1;
 		g_rumble = 1;
 		g_ledBright = 0;
+		g_padStick[0] = g_padStick[1] = PS_OFF;
 		return;
 	}
 	const TypeCfg &t = g_type[g_etype];
@@ -71,6 +78,8 @@ void applyActiveType()
 	g_padHaptics = t.padHaptics;
 	g_rumble = t.rumble;
 	g_ledBright = t.ledBright;
+	g_padStick[0] = g_padStickCfg[g_etype][0];
+	g_padStick[1] = g_padStickCfg[g_etype][1];
 }
 // poll rate defaults to POLL_US_DEFAULT (250 Hz), matching the real Valve puck (see config.h). The
 // delivered report rate equals the poll rate (fresh IMU in every reply). Live-adjustable via console
@@ -84,16 +93,24 @@ uint32_t g_pollUs = POLL_US_DEFAULT;
 #define CFG_MAGIC 0xCF
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
-		bootMode, chordBtn[3], rsvd1;
-	// rsvd1: legacy rumble-strength slot (strength now fixed at RUMBLE_SCALE_PCT; ignored -- kept so the
-	// on-flash layout is unchanged and an existing cfg.bin still loads).
+		bootMode, chordBtn[3], rumbScale2;
+	// rumbScale2: host-rumble strength as PERCENT/2 (so 500% fits a byte). 0 = never set -> keep the
+	// RUMBLE_SCALE_PCT default. This revives the byte the removed rumble-strength slider used, so the
+	// on-flash layout is unchanged and an existing cfg.bin still loads.
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
-	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
-	uint8_t rxWin10, lizKeep, landAll87;
+	// haptics.h LIZKEEP_MS).
+	uint8_t rxWin10, lizKeep, isMachineInternal;
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 	// TAIL (appended after CFG_MAGIC 0xCF shipped): back4+D-pad mode assignments. New tail fields go HERE, at
 	// the end, and loadCfg accepts a short file so an upgrade keeps every existing setting -- see CFG_LEN_MIN.
 	uint8_t chordDpad[4];
+	// per-type trackpad->stick mapping: [et][0] = left pad, [et][1] = right pad (PS_*)
+	uint8_t padStick[ET_COUNT][2];
+	// RUMBLE_STYLE_*; 0xFF (short pre-tail file) -> compiled default
+	uint8_t rumbleStyle;
+	// autonomous controller power-off on host sleep (see haptics.h g_suspendOff). 0/1; 0xFF (short
+	// pre-tail file) -> compiled default (on)
+	uint8_t suspendOff;
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
@@ -112,15 +129,21 @@ void saveCfg()
 		  (uint8_t)(g_persistMode ? 1 : 0),
 		  g_bootMode,
 		  { g_chordBtn[0], g_chordBtn[1], g_chordBtn[2] },
-		  0, // rsvd1 (ex rumble strength)
+		  (uint8_t)(g_rumbleScale / 2), // host-rumble strength, pct/2
 		  (uint8_t)(g_rxWin / 10),
 		  g_lizKeep,
-		  g_landAll87,
+		  (uint8_t)(g_isMachineInternal ? 0xEE : 0),
 		  {},
 		  { g_chordDpad[0], g_chordDpad[1], g_chordDpad[2],
-		    g_chordDpad[3] } };
-	for (int i = 0; i < ET_COUNT; i++)
+		    g_chordDpad[3] },
+		  {},
+		  g_rumbleStyle,
+		  g_suspendOff };
+	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
+		c.padStick[i][0] = g_padStickCfg[i][0];
+		c.padStick[i][1] = g_padStickCfg[i][1];
+	}
 	InternalFS.remove(CFG_FILE);
 	File f(InternalFS);
 	if (f.open(CFG_FILE, FILE_O_WRITE)) {
@@ -179,6 +202,13 @@ void loadCfg()
 			for (int i = 0; i < 4; i++)
 				if (modeValid(c.chordDpad[i]))
 					g_chordDpad[i] = c.chordDpad[i];
+			// Pad->stick mapping: 0xFF (a file predating this tail field) or an out-of-range
+			// value keeps the compiled default (off).
+			for (int i = 0; i < ET_COUNT; i++)
+				for (int k = 0; k < 2; k++)
+					if (c.padStick[i][k] <= PS_MAX)
+						g_padStickCfg[i][k] =
+							c.padStick[i][k];
 			// grow a short file to the current layout on the next save
 			if (got < (int)sizeof c)
 				consume = true;
@@ -187,9 +217,28 @@ void loadCfg()
 			// through -> keep the on default)
 			if (c.lizKeep <= 1)
 				g_lizKeep = c.lizKeep;
-			// verbatim-0x87-relay experiment toggle (0/1; default off)
-			if (c.landAll87 <= 1)
-				g_landAll87 = c.landAll87;
+
+			// This variable previously used to have values 0/1.
+			// Use a seperate trigger value 0xEE if we want to emulate a Steam Machine's
+			// internal receiver.
+			g_isMachineInternal = (c.isMachineInternal == 0xEE);
+
+			// host-rumble strength (pct/2; 0 = never set, or a cfg.bin from before this
+			// field was revived -> keep the RUMBLE_SCALE_PCT default)
+			if (c.rumbScale2) {
+				uint16_t pct = (uint16_t)c.rumbScale2 * 2;
+				if (pct < RUMBLE_SCALE_MIN)
+					pct = RUMBLE_SCALE_MIN;
+				else if (pct > RUMBLE_SCALE_MAX)
+					pct = RUMBLE_SCALE_MAX;
+				g_rumbleScale = pct;
+			}
+			// host-rumble style (0xFF = short pre-tail file -> keep the default)
+			if (c.rumbleStyle <= RUMBLE_STYLE_MAX)
+				g_rumbleStyle = c.rumbleStyle;
+			// suspend power-off enable (0xFF = a cfg.bin predating this tail field -> keep the on default)
+			if (c.suspendOff <= 1)
+				g_suspendOff = c.suspendOff;
 			// The poll RX window is now FIXED (g_rxWin is const) -- any persisted rxWin10 is ignored.
 		}
 		f.close();
