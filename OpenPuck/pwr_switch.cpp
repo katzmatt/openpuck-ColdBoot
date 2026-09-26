@@ -2,12 +2,11 @@
 #include "bonds.h" // NSLOT, g_slot, g_connReplyMs
 #include "triton.h" // TB_STEAM, g_in
 #include <Arduino.h>
-#include <Adafruit_TinyUSB.h> // USBDevice.mounted()
 
 #define PWR_SWITCH_RELEASED ((PWR_SWITCH_ACTIVE) == HIGH ? LOW : HIGH)
 #define PULSE_MS 300u // motherboard power-header pulse width
-#define HOST_OFF_DEBOUNCE_MS \
-	1500u // USB must read "not mounted" this long before we trust it
+// PWR_SENSE_PIN must read below PWR_SENSE_THRESHOLD this long before we trust it
+#define HOST_OFF_DEBOUNCE_MS 1500u
 #define RETRIGGER_COOLDOWN_MS 5000u // minimum spacing between pulses
 
 static bool s_pulseActive = false;
@@ -25,6 +24,7 @@ void pwrSwitchInit()
 {
 	pinMode(PWR_SWITCH_PIN, OUTPUT);
 	digitalWrite(PWR_SWITCH_PIN, PWR_SWITCH_RELEASED);
+	pinMode(PWR_SENSE_PIN, INPUT);
 }
 
 static void firePulse()
@@ -44,9 +44,15 @@ void pwrSwitchTask()
 		s_pulseActive = false;
 	}
 
-	// Host-off debounce: USBDevice.mounted() must read false CONTINUOUSLY for HOST_OFF_DEBOUNCE_MS.
-	// Resets the instant it reads true, so a genuine boot/enumeration can never look like "off".
-	if (USBDevice.mounted()) {
+	// Host-off debounce: PWR_SENSE_PIN must read on the "host off" side of PWR_SENSE_THRESHOLD
+	// CONTINUOUSLY for HOST_OFF_DEBOUNCE_MS. Resets the instant it reads "host on", so a genuine
+	// power-up (or a momentary sag/glitch on the sensed rail) can never look like "off". Which
+	// side of the threshold means "on" depends on PWR_SENSE_ACTIVE_HIGH -- see pwr_switch.h.
+	uint32_t senseRaw = analogRead(PWR_SENSE_PIN);
+	bool hostOn = PWR_SENSE_ACTIVE_HIGH ?
+			      (senseRaw >= PWR_SENSE_THRESHOLD) :
+			      (senseRaw < PWR_SENSE_THRESHOLD);
+	if (hostOn) {
 		s_hostOffSinceMs = 0;
 	} else if (s_hostOffSinceMs == 0) {
 		s_hostOffSinceMs = millis();

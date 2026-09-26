@@ -23,9 +23,9 @@
 
 // Optional GPIO trigger wired to the HOST motherboard's front-panel power-switch header: fires a
 // momentary pulse when the paired Steam Controller's STEAM button is short-pressed WHILE the host
-// is off (USB not enumerated). 0 (default) = feature compiled out entirely -- no pin driven, no
-// behavior change for anyone without the extra wiring. -DOPK_PWR_SWITCH=1 to enable. See
-// pwr_switch.h for the pin/timing knobs.
+// is off (sensed 5V rail below threshold). 0 (default) = feature compiled out entirely -- no pin
+// driven, no behavior change for anyone without the extra wiring. -DOPK_PWR_SWITCH=1 to enable.
+// See pwr_switch.h for the pin/timing knobs.
 #ifndef OPK_PWR_SWITCH
 #define OPK_PWR_SWITCH 0
 #endif

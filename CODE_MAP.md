@@ -513,8 +513,15 @@ stamps `g_pulseMs`; `ledTask()` clears after `PULSE_MS=500`. No buffers/delays/r
 
 ### `pwr_switch.cpp` / `pwr_switch.h` (loop task; compiled in only under `OPK_PWR_SWITCH`)
 Drives one GPIO pin, wired externally to the HOST motherboard's power-switch header, to
-power the PC on. `pwrSwitchTask()`: (1) debounces `USBDevice.mounted()==false` for
-`HOST_OFF_DEBOUNCE_MS` into a `hostOff` flag; (2) per slot, independently re-derives the
+power the PC on, gated on a second GPIO (`PWR_SENSE_PIN`) that reads a resistor-divided
+sense voltage off some rail that reads differently on vs. off (PWR LED+ by default; see
+README for other rails/divider values and the measurement procedure -- which side of the
+threshold means "on" is NOT assumed fixed: the reference PWR LED+ tap reads high when off
+and low when on, backwards from the naive assumption, because the LED's anode floats up to
+the rail when no current flows through it). `pwrSwitchTask()`: (1) computes `hostOn` from
+`analogRead(PWR_SENSE_PIN)` vs. `PWR_SENSE_THRESHOLD`, comparison direction selected by
+`PWR_SENSE_ACTIVE_HIGH`, and debounces `!hostOn` for `HOST_OFF_DEBOUNCE_MS` into a
+`hostOff` flag; (2) per slot, independently re-derives the
 Steam-button short-press edge already detected in `rf_link.cpp` by reading `g_in[s].buttons`
 + `g_connReplyMs[s]` directly (same pattern `haptics.cpp`'s `hapticOnReconnect` uses against
 `rf_link.cpp`'s own link-up edge) — gated on that slot being link-up so a mid-press link drop

@@ -116,11 +116,14 @@ This is a tool to emulate a Steam Controller 2 with almost all of its inputs (ex
 [![ReversePuck Demo](https://img.youtube.com/vi/q_AvvpFn4A8/0.jpg)](https://www.youtube.com/watch?v=q_AvvpFn4A8)
 
 # ColdBoot Functionality
-ColdBoot lets a paired Steam Controller turn the PC on from a fully off state: a short press of the Steam button makes the puck pulse a GPIO pin that closes the motherboard's power-switch circuit, exactly like pressing the case power button. It works because the USB port keeps standby power on the board while the PC is off, so the puck stays awake and keeps listening. It only fires when the host is genuinely off (USB not enumerated), so it can't send a stray power press during normal use.
+ColdBoot lets a paired Steam Controller turn the PC on from a fully off state: a short press of the Steam button makes the puck pulse a GPIO pin that closes the motherboard's power-switch circuit, exactly like pressing the case power button. It works because the USB port keeps standby power on the board while the PC is off, so the puck stays awake and keeps listening. To know the host is genuinely off, the firmware reads a second GPIO (`PWR_SENSE_PIN`) through a resistor divider off a rail that reads differently on vs. off (a PWR LED, a fan header, a standby rail) — it only fires while that reads "off", so it can't send a stray power press during normal use.
 
-This needs a little extra wiring (one resistor, one transistor, two wires to the front-panel header) and is off by default in the firmware -- build it with `make uf2 EXTRA_FLAGS="-DOPK_PWR_SWITCH=1"`.
+This needs a little extra wiring (a switch-trigger stage plus a sense divider) and is off by default in the firmware -- build it with `make uf2 EXTRA_FLAGS="-DOPK_PWR_SWITCH=1"`.
 
-Bill of materials, schematic, and step-by-step wiring instructions: [How to wire up an NRF52 board for cold boot](https://github.com/safijari/openpuck/wiki/How-to-wire-up-an-NRF52-board-for-cold-boot).
+> [!WARNING]
+> The sense line does not necessarily read "high when on, low when off." On the reference build, the default `PWR LED+` tap reads ~5V with the host OFF and ~2.7V with it ON — the opposite of the naive assumption, because an unlit LED's anode floats up to the rail with no current flowing, while a lit one pulls that point down near its forward-voltage drop instead. **Measure your own sense point in both power states with a multimeter before wiring it up**, and set `PWR_SENSE_ACTIVE_HIGH`/`PWR_SENSE_THRESHOLD` in `pwr_switch.h` to match — that file's comments walk through the full measure → divide → configure procedure.
+
+Bill of materials, schematic, and step-by-step wiring instructions: [How to wire up an NRF52 board for cold boot](https://github.com/safijari/openpuck/wiki/How-to-wire-up-an-NRF52-board-for-cold-boot) (the wiki predates the sense-divider addition above — see `pwr_switch.h` for that part in the meantime).
 
 # Future work
 - Find a way to make Xinput mode and mouse work together on all platforms
