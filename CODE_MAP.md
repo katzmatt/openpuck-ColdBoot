@@ -515,8 +515,8 @@ stamps `g_pulseMs`; `ledTask()` clears after `PULSE_MS=500`. No buffers/delays/r
 Drives one GPIO pin, wired externally to the HOST motherboard's power-switch header, to
 power the PC on, gated on a second GPIO (`PWR_SENSE_PIN`) that reads a resistor-divided
 sense voltage off some rail that reads differently on vs. off (PWR LED+ by default; see
-README for other rails/divider values and the measurement procedure -- which side of the
-threshold means "on" is NOT assumed fixed: the reference PWR LED+ tap reads high when off
+pwr_switch.h's comments for other rails/divider values and the measurement procedure --
+which side of the threshold means "on" is NOT assumed fixed: the reference PWR LED+ tap reads high when off
 and low when on, backwards from the naive assumption, because the LED's anode floats up to
 the rail when no current flows through it). `pwrSwitchTask()`: (1) computes `hostOn` from
 `analogRead(PWR_SENSE_PIN)` vs. `PWR_SENSE_THRESHOLD`, comparison direction selected by

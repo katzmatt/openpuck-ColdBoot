@@ -285,16 +285,17 @@ already recognizes — but the condition is the opposite: instead of firing whil
 attached, this fires only while the host is genuinely **off**: `analogRead(PWR_SENSE_PIN)` reading on the
 "host-off" side of `PWR_SENSE_THRESHOLD` continuously for `HOST_OFF_DEBOUNCE_MS` (~1.5 s), so a brief sag/glitch
 on the sensed rail can't false-trigger. `PWR_SENSE_PIN` is fed by an external resistor divider off some rail
-that reads differently when the host is on vs. off (PWR LED+ by default, or a fan header/standby rail — see the
-README's ColdBoot section for divider values); an earlier revision used `USBDevice.mounted()` for this instead,
-but that read unreliably across different motherboards/BIOSes, so it was replaced with a direct voltage sense.
+that reads differently when the host is on vs. off (PWR LED+ by default, or a fan header/standby rail — see
+`pwr_switch.h`'s comments for divider values per rail); an earlier revision used `USBDevice.mounted()` for this
+instead, but that read unreliably across different motherboards/BIOSes, so it was replaced with a direct voltage
+sense.
 Critically, "on the host-off side" is **not always "reads low"**: the reference board's `PWR LED+` tap measures
 ~5V with the host off and ~2.7V with it on — inverted from the naive assumption, since with no current through
 the LED (host off) its anode floats up to the rail through the motherboard's own current-limiting resistor,
 while a lit LED (host on) pulls that point down near its forward-voltage drop instead. `PWR_SENSE_ACTIVE_HIGH`
 (default `0`, matching that inverted reference behavior) selects which side of `PWR_SENSE_THRESHOLD` means "on";
 both it and the threshold are meant to be re-measured and reconfigured per motherboard, not trusted as-is — see
-`pwr_switch.h`'s comments and the README for the measurement procedure. It's a deliberately independent detector — reading
+`pwr_switch.h`'s comments for the measurement procedure. It's a deliberately independent detector — reading
 `g_in[]`/`g_connReplyMs[]` directly from its own `pwrSwitchTask()` rather than hooking into `rf_link.cpp` —
 mirroring how `haptics.cpp`'s `hapticOnReconnect` already re-derives the link-up signal independently instead of
 sharing state with `rf_link.cpp`'s own edge detector. A per-slot link-up guard (same 300 ms threshold as

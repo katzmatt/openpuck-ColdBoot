@@ -30,8 +30,8 @@
 // Arduino pin number for physical P0.29 ("029" on this SuperMini clone's silkscreen), aka A6 on
 // the Adafruit Feather core this builds against (variants/feather_nrf52840_express/variant.cpp:
 // g_ADigitalPinMap[20] == 29). Fed by an external resistor divider off whatever rail you're
-// sensing -- see README's ColdBoot section for divider values per rail. Don't assume this Arduino
-// pin number identifies the same physical pin on a different board core.
+// sensing -- see the "Adapting..." block below for divider values per rail. Don't assume this
+// Arduino pin number identifies the same physical pin on a different board core.
 #define PWR_SENSE_PIN A6
 #endif
 
@@ -54,8 +54,16 @@
 //        behaves the "expected" way: ~0V when off, full rail when on.
 //      - An LED tap (PWR LED+, HDD LED+, etc.) can easily be inverted, as above -- MEASURE, don't
 //        assume, even if your board also uses a PWR LED like the reference one.
-// 2. Build the divider for your tap per the README table (or scale your own: pick R2, then
-//    R1 = R2 * (V_rail / V_target - 1) for whatever V_target <= ~3.0V you want at the pin).
+// 2. Build a divider that keeps the pin's voltage safely under the ~3.6V ADC ceiling even at the
+//    rail's worst-case high tolerance: pick R2, then R1 = R2 * (V_rail / V_target - 1) for
+//    whatever V_target <= ~3.0V you want at the pin. Some worked examples (R1 = rail-to-pin, R2 =
+//    pin-to-GND):
+//      3.3V rail  -- R1=1k,  R2=10k -> ~3.0V at the pin (normally NOT inverted: off=~0V, on=~3.3V)
+//      5V rail    -- R1=10k, R2=20k -> ~3.33V at the pin (the reference PWR LED+ tap below -- CAN
+//                    be inverted, see above)
+//      12V rail   -- R1=33k, R2=10k -> ~2.8V at the pin, extra margin since 12V runs looser
+//                    tolerance than 3.3V/5V (typically a plain fan header, NOT inverted, but
+//                    confirm -- some boards keep fan headers powered/PWM'd even in a low state)
 //    Compute the DIVIDED voltage for both states: V_pin = V_measured * R2/(R1+R2).
 // 3. Set PWR_SENSE_ACTIVE_HIGH: 1 if the divided ON voltage is HIGHER than the divided OFF
 //    voltage, 0 if it's LOWER (inverted, like the reference PWR LED+ tap below).
